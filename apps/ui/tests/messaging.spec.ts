@@ -1,0 +1,78 @@
+import { expect, test } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
+
+test('two accounts exchange messages and files, queue offline, and retain history on refresh', async ({ page, browser }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Launch team', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'New conversation', exact: true }).click();
+  const title = `Field notes ${Date.now()}`;
+  await page.getByLabel('Group name').fill(title);
+  await page.getByRole('checkbox', { name: 'Bob Chen' }).check();
+  await page.getByRole('checkbox', { name: 'Maya Patel' }).check();
+  await page.getByRole('button', { name: 'Start conversation', exact: true }).click();
+  await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
+  await page.getByRole('textbox', { name: 'Message', exact: true }).fill('A real encrypted message from Alice.');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.locator('.message-bubble').filter({ hasText: 'A real encrypted message from Alice.' })).toHaveCount(1);
+
+  const bob = await browser.newPage();
+  bob.on('pageerror', error => errors.push(error.message));
+  await bob.goto('http://127.0.0.1:3107/?as=bob');
+  await bob.getByRole('button', { name: `Open ${title}`, exact: true }).click();
+  await expect(bob.locator('.message-bubble').filter({ hasText: 'A real encrypted message from Alice.' })).toBeVisible();
+  await bob.getByRole('button', { name: 'Choose test account', exact: true }).click();
+  await bob.getByRole('button', { name: /Go offline/ }).click();
+  await bob.getByRole('button', { name: 'Close account menu', exact: true }).click();
+  await bob.getByRole('textbox', { name: 'Message', exact: true }).fill('Queued while Bob is offline.');
+  await bob.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(bob.getByText('Waiting for connection', { exact: true })).toBeVisible();
+  await expect(page.locator('.message-bubble').filter({ hasText: 'Queued while Bob is offline.' })).toHaveCount(0);
+  await bob.getByRole('button', { name: 'Choose test account', exact: true }).click();
+  await bob.getByRole('button', { name: /Reconnect/ }).click();
+  await bob.getByRole('button', { name: 'Close account menu', exact: true }).click();
+  await expect(page.locator('.message-bubble').filter({ hasText: 'Queued while Bob is offline.' })).toBeVisible();
+  await expect(bob.getByText('Waiting for connection', { exact: true })).toHaveCount(0);
+
+  await bob.getByLabel('Choose an attachment').setInputFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('A small encrypted attachment.') });
+  await bob.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.getByRole('link', { name: 'Download notes.txt', exact: true })).toBeVisible();
+  const downloadEvent = page.waitForEvent('download');
+  await page.getByRole('link', { name: 'Download notes.txt', exact: true }).click();
+  const download = await downloadEvent;
+  expect(await readFile((await download.path())!, 'utf8')).toBe('A small encrypted attachment.');
+  await page.reload();
+  await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Download notes.txt', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Search this conversation', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Search messages', exact: true }).fill('offline');
+  await expect(page.locator('.message-row')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Close message search', exact: true }).click();
+  await page.getByRole('button', { name: 'Conversation details', exact: true }).click();
+  await expect(page.getByRole('complementary', { name: 'Conversation details', exact: true })).toContainText('Maya Patel');
+  await expect(page.getByRole('complementary', { name: 'Conversation details', exact: true })).toContainText('End-to-end encrypted');
+  expect(errors).toEqual([]);
+  await bob.close();
+});
+
+test('mobile navigation, keyboard search, guest restrictions, and file limits', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/?as=maya');
+  await page.getByRole('button', { name: 'Open Launch team', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeVisible();
+  await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Hello from a smaller screen 👋');
+  await page.getByRole('textbox', { name: 'Message', exact: true }).press('Enter');
+  await expect(page.locator('.message-bubble').filter({ hasText: 'Hello from a smaller screen 👋' })).toBeVisible();
+  await page.getByLabel('Choose an attachment').setInputFiles({ name: 'too-big.txt', mimeType: 'text/plain', buffer: Buffer.alloc(33 * 1024, 'a') });
+  await expect(page.getByRole('alert')).toContainText('smaller than 32 KB');
+  await page.getByRole('button', { name: 'Dismiss notification', exact: true }).click();
+  await page.getByRole('button', { name: 'Back to conversations', exact: true }).click();
+  await page.keyboard.press('Control+k');
+  await expect(page.getByRole('textbox', { name: 'Search conversations', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: 'New conversation', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Guests can message in existing conversations');
+  await page.getByRole('textbox', { name: 'Search conversations', exact: true }).fill('not-a-conversation');
+  await expect(page.getByText('No conversations found', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});

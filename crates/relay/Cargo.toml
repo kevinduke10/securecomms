@@ -1,0 +1,39 @@
+[package]
+name = "croaker-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["local"]
+local = ["dep:rusqlite"]
+aws = ["dep:aws-config", "dep:aws-sdk-dynamodb", "dep:lambda_http"]
+
+[dependencies]
+croaker-protocol.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tower.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+rusqlite = { version = "0.37", optional = true, features = ["bundled"] }
+aws-config = { version = "1", optional = true, default-features = false, features = ["rt-tokio", "default-https-client"] }
+aws-sdk-dynamodb = { version = "1", optional = true }
+lambda_http = { version = "1.3.2", optional = true, default-features = false, features = ["apigw_http"] }
+
+[dev-dependencies]
+base64.workspace = true
+tempfile = "3"
+
+[[bin]]
+name = "croaker-lambda"
+path = "src/bin/lambda.rs"
+required-features = ["aws"]

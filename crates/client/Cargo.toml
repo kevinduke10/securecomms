@@ -1,0 +1,18 @@
+[package]
+name = "croaker-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+croaker-protocol.workspace = true
+croaker-crypto.workspace = true
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+rusqlite = { version = "0.37", features = ["bundled"] }
+zeroize = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,218 @@
+openapi: 3.1.0
+info:
+  title: Croaker prototype relay
+  version: 0.1.0
+  description: |
+    Client-encrypted event relay. Operators provision per-device bearer credentials
+    out of band. The server derives tenant/device identity from the credential.
+    Identity enrollment, SSO, media, push, and billing APIs are not implemented yet.
+security:
+  - deviceBearer: []
+paths:
+  /healthz:
+    get:
+      security: []
+      responses:
+        '200':
+          description: Process health and supported protocol version; not a storage readiness check.
+  /v1/conversations:
+    post:
+      summary: Create an immutable relay device allowlist
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateConversation' }
+      responses:
+        '201':
+          description: Created, or matching idempotent creation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Conversation' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { description: Invalid JSON shape or types }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/conversations/{id}/events:
+    parameters:
+      - { $ref: '#/components/parameters/ConversationId' }
+    post:
+      summary: Durably append client-encrypted MLS bytes
+      description: |
+        Repeat the same message ID and exact envelope after an ambiguous response.
+        Reusing a sender/message ID with different content returns 409.
+        Only the owner may submit welcome/commit events. The relay does not parse
+        or authenticate MLS content; receiving clients must validate it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SubmitEvent' }
+      responses:
+        '200':
+          description: Accepted or already accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sequence, duplicate]
+                properties:
+                  sequence: { type: integer, minimum: 1 }
+                  duplicate: { type: boolean }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { description: Body exceeds 96 KiB }
+        '422': { description: Invalid JSON shape or types }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/conversations/{id}/sync:
+    parameters:
+      - { $ref: '#/components/parameters/ConversationId' }
+    get:
+      summary: Fetch a page of visible encrypted events
+      description: |
+        Continue with next_cursor while has_more is true, even for empty visible
+        pages. Own events and welcomes addressed to another device are skipped.
+        Cursors are scoped to this tenant and conversation, and may contain gaps.
+      parameters:
+        - name: after
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 32, default: 32 }
+      responses:
+        '200':
+          description: Encrypted event page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, next_cursor, has_more]
+                properties:
+                  events:
+                    type: array
+                    maxItems: 32
+                    items: { $ref: '#/components/schemas/StoredEvent' }
+                  next_cursor: { type: integer, minimum: 0 }
+                  has_more: { type: boolean }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/devices/{id}/revoke:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      summary: Revoke one's own credential, or an organization's device as admin
+      description: |
+        Revokes relay access only. Group owners must separately rotate MLS keys
+        and clients must approve/apply the removal before sending new content.
+      responses:
+        '204': { description: Credential revoked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    deviceBearer:
+      type: http
+      scheme: bearer
+      description: Random 32-byte hexadecimal device token; use HTTPS remotely.
+  parameters:
+    ConversationId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  schemas:
+    CreateConversation:
+      type: object
+      additionalProperties: false
+      required: [id, devices]
+      properties:
+        id: { type: string, format: uuid }
+        devices:
+          type: array
+          minItems: 2
+          maxItems: 500
+          uniqueItems: true
+          items: { type: string, format: uuid }
+    Conversation:
+      type: object
+      required: [id, tenant_id, owner, devices]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        owner: { type: string, format: uuid }
+        devices:
+          type: array
+          items: { type: string, format: uuid }
+    SubmitEvent:
+      type: object
+      additionalProperties: false
+      required: [protocol_version, message_id, kind, ciphertext]
+      properties:
+        protocol_version: { type: integer, const: 1 }
+        message_id: { type: string, format: uuid }
+        kind: { type: string, enum: [welcome, commit, application] }
+        recipient:
+          type: [string, 'null']
+          format: uuid
+          description: Required and non-null only for welcome events; absent/null otherwise.
+        ciphertext:
+          type: string
+          contentEncoding: base64
+          maxLength: 87384
+          description: Nonempty MLS bytes, at most 65536 bytes before base64 encoding.
+    StoredEvent:
+      type: object
+      required: [sequence, sender, submitted_at, expires_at, protocol_version, message_id, kind, ciphertext]
+      properties:
+        sequence: { type: integer, minimum: 1 }
+        sender: { type: string, format: uuid, description: Relay routing identity; independently verify the MLS sender. }
+        submitted_at: { type: integer, minimum: 0, description: Unix seconds }
+        expires_at: { type: integer, minimum: 0, description: Unix seconds }
+        protocol_version: { type: integer, const: 1 }
+        message_id: { type: string, format: uuid }
+        kind: { type: string, enum: [welcome, commit, application] }
+        recipient: { type: [string, 'null'], format: uuid }
+        ciphertext: { type: string, contentEncoding: base64 }
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+  responses:
+    Invalid:
+      description: Invalid request or unsupported protocol version
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Unauthorized:
+      description: Missing, unknown, malformed, or revoked credential
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    NotFound:
+      description: Resource absent or caller not authorized to access it
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Conflict:
+      description: Identifier reused with conflicting data, or concurrent write contention; retry the saved envelope with backoff
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Unavailable:
+      description: Storage unavailable; retry the saved envelope with backoff
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }

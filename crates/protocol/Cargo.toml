@@ -1,0 +1,11 @@
+[package]
+name = "croaker-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+base64.workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "croaker-local"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+croaker-protocol.workspace = true
+croaker-crypto.workspace = true
+croaker-client.workspace = true
+croaker-relay.workspace = true
+axum.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+base64.workspace = true
+hex.workspace = true
+rand = "0.8"
+zeroize = "1"
+tower-http = { version = "0.6", features = ["fs", "set-header"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower.workspace = true
