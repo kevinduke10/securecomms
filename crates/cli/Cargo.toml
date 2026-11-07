@@ -1,0 +1,30 @@
+[package]
+name = "croaker-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+aws = ["croaker-relay/aws", "dep:aws-config", "dep:aws-sdk-dynamodb"]
+
+[dependencies]
+croaker-protocol.workspace = true
+croaker-crypto.workspace = true
+croaker-client.workspace = true
+croaker-relay.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+rand = "0.8"
+hex.workspace = true
+zeroize = "1"
+aws-config = { version = "1", optional = true, default-features = false, features = ["rt-tokio", "default-https-client"] }
+aws-sdk-dynamodb = { version = "1", optional = true }
+
+[[bin]]
+name = "croaker"
+path = "src/main.rs"
