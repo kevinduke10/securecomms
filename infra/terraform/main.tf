@@ -117,7 +117,12 @@ resource "aws_lambda_function" "relay" {
   memory_size                    = 256
   timeout                        = 20
   reserved_concurrent_executions = var.reserved_concurrency
-  environment { variables = { CROAKER_TABLE = aws_dynamodb_table.relay.name } }
+  environment { variables = {
+    CROAKER_TABLE             = aws_dynamodb_table.relay.name
+    CROAKER_COGNITO_ISSUER    = "https://${aws_cognito_user_pool.accounts.endpoint}"
+    CROAKER_COGNITO_CLIENT_ID = aws_cognito_user_pool_client.app.id
+    CROAKER_COGNITO_DOMAIN    = "https://${aws_cognito_user_pool_domain.login.domain}.auth.${var.region}.amazoncognito.com"
+  } }
   depends_on = [aws_iam_role_policy.relay, aws_cloudwatch_log_group.lambda]
 }
 

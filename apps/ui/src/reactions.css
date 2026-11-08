@@ -1,34 +1,34 @@
 .reaction-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 6px; min-height: 26px; }
 .message-row.own .reaction-bar { justify-content: flex-end; }
 .message-bubble { touch-action: pan-y pinch-zoom; -webkit-touch-callout: none; }
-.message-bubble:focus-visible { outline: 2px solid #84a66f; outline-offset: 3px; }
-.message-bubble.reaction-open { box-shadow: 0 0 0 2px #a5bd8c55; }
-.reaction-chip { display: inline-flex; align-items: center; gap: 5px; min-height: 27px; border: 1px solid #e0e7d7; padding: 3px 8px; border-radius: 13px; background: #f4f7ef; font-size: 13px; }
-.reaction-chip > span:last-child { font-size: 10px; font-weight: 550; color: #75866b; }
-.reaction-chip:hover { border-color: #9db68b; background: #ebf2df; }
-.reaction-chip.mine { border-color: #91ad79; background: #e6efd8; }
-.reaction-chip.mine > span:last-child { color: #4b6c37; }
+.message-bubble:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.message-bubble.reaction-open { box-shadow: 0 0 0 2px #00000055; }
+.reaction-chip { display: inline-flex; align-items: center; gap: 5px; min-height: 27px; border: 1px solid var(--line); padding: 3px 8px; border-radius: 13px; background: var(--sidebar); font-size: 13px; }
+.reaction-chip > span:last-child { font-size: 10px; font-weight: 550; color: var(--muted); }
+.reaction-chip:hover { border-color: var(--focus); background: var(--soft); }
+.reaction-chip.mine { border-color: var(--focus); background: var(--hover); }
+.reaction-chip.mine > span:last-child { color: var(--text); }
 .reaction-chip.queued { border-style: dashed; }
-.reaction-picker { position: fixed; display: flex; align-items: center; gap: 3px; width: 294px; max-width: calc(100vw - 20px); background: #fffffc; border: 1px solid #dfe7d4; border-radius: 22px; padding: 7px; box-shadow: 0 6px 28px #173f3526; z-index: 25; }
+.reaction-picker { position: fixed; display: flex; align-items: center; gap: 3px; width: 294px; max-width: calc(100vw - 20px); background: var(--surface); border: 1px solid var(--line); border-radius: 22px; padding: 7px; box-shadow: 0 6px 28px #00000026; z-index: 25; }
 .reaction-picker > button { width: 36px; height: 36px; border-radius: 10px; font-size: 23px; display: inline-flex; align-items: center; justify-content: center; }
-.reaction-picker > button:hover, .reaction-picker > button.selected { background: #e9f0df; }
-.reaction-picker > .more-emoji { background: #edf2e5; color: #678353; border-radius: 50%; }
+.reaction-picker > button:hover, .reaction-picker > button.selected { background: var(--hover); }
+.reaction-picker > .more-emoji { background: var(--soft); color: var(--text); border-radius: 50%; }
 .reaction-picker.expanded { display: flex; flex-direction: column; align-items: stretch; width: 328px; height: 366px; max-height: calc(100dvh - 20px); padding: 10px; border-radius: 16px; }
 .emoji-search-heading { display: flex; align-items: center; gap: 5px; margin-bottom: 7px; }
-.emoji-search-heading strong { flex: 1; font-size: 12px; font-weight: 550; color: #5b754b; }
-.emoji-search-heading > button { width: 29px; height: 29px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #8d9e7c; }
-.emoji-search-heading > button:hover { background: #edf3e5; }
-.emoji-search { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid #dce6d0; border-radius: 9px; color: #95a786; margin-bottom: 8px; }
-.emoji-search:focus-within { border-color: #8fa975; }
-.emoji-search input { width: 100%; min-width: 0; border: 0; outline: none; background: transparent; font-size: 12px; color: #4f6b41; }
+.emoji-search-heading strong { flex: 1; font-size: 12px; font-weight: 550; color: var(--text); }
+.emoji-search-heading > button { width: 29px; height: 29px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.emoji-search-heading > button:hover { background: var(--soft); }
+.emoji-search { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); margin-bottom: 8px; }
+.emoji-search:focus-within { border-color: var(--focus); }
+.emoji-search input { width: 100%; min-width: 0; border: 0; outline: none; background: transparent; font-size: 12px; color: var(--text); }
 .emoji-results { display: grid; grid-template-columns: repeat(8,minmax(0,1fr)); gap: 3px; align-content: start; min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .emoji-choice { min-width: 0; height: 35px; display: flex; align-items: center; justify-content: center; font-size: 23px; padding: 0; border-radius: 8px; }
-.emoji-choice:hover, .emoji-choice.selected { background: #e9f0df; }
-.emoji-no-results { grid-column: 1/-1; padding: 35px 10px; text-align: center; color: #99a68b; font-size: 12px; line-height: 1.7; }
-.emoji-search-footer { padding: 8px 4px 0; font-size: 10px; color: #9aa88d; border-top: 1px solid #edf1e6; margin-top: 7px; }
-.typing-indicator { min-height: 25px; flex-shrink: 0; padding: 0 38px; display: flex; gap: 8px; align-items: center; color: #879a76; font-size: 10px; }
-.typing-dots { display: inline-flex; align-items: center; justify-content: center; gap: 3px; height: 16px; width: 30px; border-radius: 8px; background: #eaf0e2; }
-.typing-dots i { width: 3px; height: 3px; background: #8ea47a; border-radius: 50%; animation: typing-pulse 1.3s infinite; }
+.emoji-choice:hover, .emoji-choice.selected { background: var(--hover); }
+.emoji-no-results { grid-column: 1/-1; padding: 35px 10px; text-align: center; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.emoji-search-footer { padding: 8px 4px 0; font-size: 10px; color: var(--muted); border-top: 1px solid var(--line); margin-top: 7px; }
+.typing-indicator { min-height: 25px; flex-shrink: 0; padding: 0 38px; display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 10px; }
+.typing-dots { display: inline-flex; align-items: center; justify-content: center; gap: 3px; height: 16px; width: 30px; border-radius: 8px; background: var(--soft); }
+.typing-dots i { width: 3px; height: 3px; background: var(--accent); border-radius: 50%; animation: typing-pulse 1.3s infinite; }
 .typing-dots i:nth-child(2) { animation-delay: .15s; }
 .typing-dots i:nth-child(3) { animation-delay: .3s; }
 @keyframes typing-pulse { 0%, 60%, 100% { transform: translateY(0); opacity: .55; } 30% { transform: translateY(-2px); opacity: 1; } }

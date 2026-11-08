@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Plus, Search, X } from 'lucide-react';
+import { ArrowLeft, CornerUpLeft, Plus, Search, X } from 'lucide-react';
 type EmojiEntry = { emoji: string; name: string; keywords: string[]; search: string };
 let catalogPromise: Promise<EmojiEntry[]> | undefined;
 function loadCatalog() {
@@ -13,10 +13,10 @@ type Position = { top: number; left: number; maxHeight: number };
 type Props = {
   message: { reactions?: { emoji: string; users: string[]; pending: boolean }[] };
   profile: string; profiles: { id: string; name: string }[]; options: string[];
-  onReact: (emoji: string | null) => Promise<void>; children: ReactNode;
+  onReact: (emoji: string | null) => Promise<void>; onReply?:()=>void; children: ReactNode;
 };
 
-export default function MessageBubble({ message, profile, profiles, options, onReact, children }: Props) {
+export default function MessageBubble({ message, profile, profiles, options, onReact, onReply, children }: Props) {
   const [position, setPosition] = useState<Position | null>(null);
   const [expanded, setExpanded] = useState(false); const [query, setQuery] = useState(''); const [busy, setBusy] = useState(false);
   const [catalog, setCatalog] = useState<EmojiEntry[]>([]); const [loading, setLoading] = useState(false); const [loadError, setLoadError] = useState(false);
@@ -38,7 +38,7 @@ export default function MessageBubble({ message, profile, profiles, options, onR
     const width = Math.min(isExpanded ? 328 : 294, innerWidth - 20);
     const viewportTop = window.visualViewport?.offsetTop || 0;
     const viewportHeight = window.visualViewport?.height || innerHeight;
-    const height = Math.min(isExpanded ? 366 : 54, viewportHeight - 20);
+    const height = Math.min(isExpanded ? 366 : onReply ? 98 : 54, viewportHeight - 20);
     return {
       left: Math.max(10, Math.min(innerWidth - width - 10, rect.right - width)),
       top: Math.max(viewportTop + 10, Math.min(viewportTop + viewportHeight - height - 10, rect.top >= viewportTop + height + 18 ? rect.top - height - 10 : rect.bottom + 10)),
@@ -88,7 +88,7 @@ export default function MessageBubble({ message, profile, profiles, options, onR
     try { setCatalog(await loadCatalog()); } catch { setLoadError(true); } finally { setLoading(false); }
   }
   return <>
-    <div ref={bubble} className={`message-bubble ${position ? 'reaction-open' : ''}`} tabIndex={0} role="group" aria-label="Message" aria-haspopup="dialog" aria-description="Press and hold to react. You can also right-click, or press Enter or Space."
+    <div ref={bubble} className={`message-bubble ${position ? 'reaction-open' : ''}`} tabIndex={0} role="group" aria-label="Message" aria-haspopup="dialog" aria-description="Press and hold to react or reply. You can also right-click, or press Enter or Space."
       onPointerDown={startHold} onPointerMove={move} onPointerUp={cancelHold} onPointerCancel={() => { cancelHold(); held.current = false; }} onPointerLeave={cancelHold} onDragStart={cancelHold}
       onClickCapture={event => { if (held.current) { event.preventDefault(); event.stopPropagation(); held.current = false; } }}
       onContextMenu={event => { event.preventDefault(); cancelHold(); open(); }}
@@ -101,10 +101,10 @@ export default function MessageBubble({ message, profile, profiles, options, onR
       return <button key={reaction.emoji} type="button" className={`reaction-chip ${own ? 'mine' : ''} ${reaction.pending ? 'queued' : ''}`} disabled={busy} aria-pressed={own}
         aria-label={`${own ? 'Remove your' : 'Add'} ${reaction.emoji} reaction (${reaction.users.length}): ${reactors}`} title={`${reactors}${reaction.pending ? ' · Waiting for connection' : ''}`} onClick={() => { void choose(reaction.emoji); }}><span>{reaction.emoji}</span><span>{reaction.users.length}</span></button>;
     })}</div>}
-    {position && createPortal(<div ref={picker} className={`reaction-picker ${expanded ? 'expanded' : ''}`} role="dialog" aria-label="Choose a reaction" style={position}>
-      {!expanded ? <>
+    {position && createPortal(<div ref={picker} className={`reaction-picker ${expanded ? 'expanded' : onReply ? 'with-reply' : ''}`} role="dialog" aria-label="Choose a reaction" style={position}>
+      {!expanded ? <><div className="quick-reactions">
         {options.map(emoji => <button key={emoji} type="button" title={quickNames[emoji]} aria-label={`React with ${emoji}`} aria-pressed={mine === emoji} className={mine === emoji ? 'selected' : ''} onClick={() => { void choose(emoji); }}>{emoji}</button>)}
-        <button type="button" className="more-emoji" aria-label="More emoji" title="More emoji" onClick={() => { void expand(); }}><Plus size={22} /></button>
+        <button type="button" className="more-emoji" aria-label="More emoji" title="More emoji" onClick={() => { void expand(); }}><Plus size={22} /></button></div>{onReply && <button type="button" className="reply-action" onClick={()=>{close();onReply();}}><CornerUpLeft size={15}/>Reply</button>}
       </> : <>
         <div className="emoji-search-heading"><button type="button" aria-label="Back to quick reactions" onClick={() => { setExpanded(false); setQuery(''); }}><ArrowLeft size={17} /></button><strong>Choose an emoji</strong><button type="button" aria-label="Close emoji picker" onClick={() => { close(); bubble.current?.focus({ preventScroll: true }); }}><X size={17} /></button></div>
         <label className="emoji-search"><Search size={15} /><input ref={search} type="search" aria-label="Search emoji" placeholder="Search emoji…" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'ArrowDown') { event.preventDefault(); picker.current?.querySelector<HTMLButtonElement>('.emoji-choice')?.focus(); } if (event.key === 'Enter' && results.length) { event.preventDefault(); void choose(results[0].emoji); } }} /></label>

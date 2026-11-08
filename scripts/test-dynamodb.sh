@@ -25,3 +25,7 @@ if [[ "$ready" != true ]]; then
   exit 1
 fi
 cargo test -p croaker-relay --features aws --test store_contract dynamodb_store_contract -- --ignored --nocapture
+
+cargo test -p croaker-relay --features aws --test enrollment_contract dynamodb_enrollment_contract -- --ignored --nocapture
+
+cargo test -p croaker-relay --features aws --test membership_contract dynamodb_admission_contract -- --ignored --nocapture

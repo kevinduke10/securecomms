@@ -11,8 +11,11 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use zeroize::Zeroizing;
 
+pub mod backup;
 mod history;
-pub use history::{HistoryMessage, TransientMessage};
+pub mod membership;
+pub use history::{AppliedPage, HistoryMessage, TransientMessage};
+pub use membership::{ApprovedAddition, PendingAdmission};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
@@ -55,6 +58,10 @@ fn connect(path: impl AsRef<Path>) -> Result<Connection> {
         CREATE TABLE IF NOT EXISTS state(id INTEGER PRIMARY KEY CHECK(id=1), sealed BLOB NOT NULL);
         CREATE TABLE IF NOT EXISTS outbox(position INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT NOT NULL UNIQUE, envelope TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS history(position INTEGER PRIMARY KEY AUTOINCREMENT, conversation TEXT NOT NULL, sender TEXT NOT NULL, message_id TEXT NOT NULL, sealed BLOB NOT NULL, UNIQUE(conversation,sender,message_id));
+        CREATE TABLE IF NOT EXISTS stale_applications(conversation TEXT PRIMARY KEY, count INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS group_join_epochs(conversation TEXT PRIMARY KEY, epoch INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS group_admissions(request_id TEXT PRIMARY KEY, conversation TEXT NOT NULL, envelope TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS recovered_archives(id TEXT PRIMARY KEY, sealed BLOB NOT NULL);
         CREATE TABLE IF NOT EXISTS cursors(conversation TEXT PRIMARY KEY, cursor INTEGER NOT NULL);").map_err(|_| ClientError::Storage)?;
     Ok(connection)
 }

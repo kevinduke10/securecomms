@@ -19,6 +19,11 @@ pub struct TransientMessage {
     pub message: HistoryMessage,
 }
 
+pub struct AppliedPage {
+    pub transient: Vec<TransientMessage>,
+    pub skipped_stale_applications: usize,
+}
+
 fn context(conversation: ConversationId, sender: DeviceId, message: MessageId) -> Vec<u8> {
     format!("history:{conversation}:{sender}:{message}").into_bytes()
 }
@@ -105,11 +110,55 @@ impl ClientStore {
         peers: &[DeviceBinding],
         is_transient: fn(&[u8]) -> bool,
     ) -> Result<Vec<TransientMessage>> {
+        self.apply_page_with_membership(
+            conversation,
+            expected_cursor,
+            page,
+            peers,
+            is_transient,
+            &[],
+        )
+    }
+
+    /// The approval list must come from independently trusted local membership
+    /// decisions, never be inferred from a relay-provided roster alone.
+    pub fn apply_page_with_membership(
+        &mut self,
+        conversation: ConversationId,
+        expected_cursor: u64,
+        page: &SyncPage,
+        peers: &[DeviceBinding],
+        is_transient: fn(&[u8]) -> bool,
+        approvals: &[crate::membership::ApprovedAddition],
+    ) -> Result<Vec<TransientMessage>> {
+        self.apply_page_with_membership_report(
+            conversation,
+            expected_cursor,
+            page,
+            peers,
+            is_transient,
+            approvals,
+        )
+        .map(|report| report.transient)
+    }
+
+    pub fn apply_page_with_membership_report(
+        &mut self,
+        conversation: ConversationId,
+        expected_cursor: u64,
+        page: &SyncPage,
+        peers: &[DeviceBinding],
+        is_transient: fn(&[u8]) -> bool,
+        approvals: &[crate::membership::ApprovedAddition],
+    ) -> Result<AppliedPage> {
         if page.events.is_empty()
             && page.next_cursor == expected_cursor
             && self.cursor(conversation)? == expected_cursor
         {
-            return Ok(Vec::new());
+            return Ok(AppliedPage {
+                transient: Vec::new(),
+                skipped_stale_applications: 0,
+            });
         }
         let key = Zeroizing::new(*self.key);
         self.transaction(|tx, device| {
@@ -117,26 +166,39 @@ impl ClientStore {
             if current != expected_cursor || page.next_cursor < current { return Err(ClientError::Storage); }
             let mut sequence = current;
             let mut transient = Vec::new();
+            let mut skipped_stale_applications=0usize;
             for stored in &page.events {
                 if stored.sequence <= sequence || stored.sequence > page.next_cursor { return Err(ClientError::Storage); }
                 sequence = stored.sequence;
                 let bytes = BASE64_STANDARD.decode(&stored.event.ciphertext).map_err(|_| ClientError::Storage)?;
                 match stored.event.kind {
-                    EventKind::Welcome => device.join(conversation, &bytes, peers)?,
+                    EventKind::Welcome => {
+                        device.join(conversation, &bytes, peers)?;
+                        tx.execute("INSERT INTO group_join_epochs(conversation,epoch) VALUES(?1,?2)",params![conversation.to_string(),device.conversation_epoch(conversation)?]).map_err(|_|ClientError::Storage)?;
+                    },
                     EventKind::Application => {
                         let known: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM history WHERE conversation=?1 AND sender=?2 AND message_id=?3)", params![conversation.to_string(), stored.sender.to_string(), stored.event.message_id.to_string()], |r| r.get(0)).map_err(|_| ClientError::Storage)?;
                         if known { continue; }
+                        let join_epoch:u64=tx.query_row("SELECT epoch FROM group_join_epochs WHERE conversation=?1",[conversation.to_string()],|row|row.get(0)).optional().map_err(|_|ClientError::Storage)?.unwrap_or(0);
+                        if device.stale_application(conversation,&bytes,join_epoch)? {skipped_stale_applications+=1;continue;}
                         let Received::Application { sender, plaintext } = device.receive(conversation, &bytes)?;
                         if sender != stored.sender { return Err(CryptoError::IdentityMismatch.into()); }
                         let message = HistoryMessage { message_id: stored.event.message_id, conversation_id: conversation, sender, sent_at: stored.submitted_at, plaintext, outgoing: false, pending: false };
                         if is_transient(&message.plaintext) { transient.push(TransientMessage { sequence: stored.sequence, message }); }
                         else { save(tx, &message, &key)?; }
                     }
-                    EventKind::Commit => return Err(CryptoError::Mls("membership changes require explicit approval").into()),
+                    EventKind::Commit => {
+                        let approval=approvals.iter().find(|approval|approval.commit_id==stored.event.message_id).ok_or(CryptoError::Mls("membership changes require explicit approval"))?;
+                        if stored.sender!=approval.authority.device_id {return Err(CryptoError::IdentityMismatch.into());}
+                        device.apply_addition(conversation,&bytes,&approval.authority,&approval.added)?;
+                    },
                 }
             }
+            if skipped_stale_applications>0 {
+                tx.execute("INSERT INTO stale_applications(conversation,count) VALUES(?1,?2) ON CONFLICT(conversation) DO UPDATE SET count=count+excluded.count",params![conversation.to_string(),skipped_stale_applications as u64]).map_err(|_|ClientError::Storage)?;
+            }
             tx.execute("INSERT INTO cursors(conversation,cursor) VALUES(?1,?2) ON CONFLICT(conversation) DO UPDATE SET cursor=excluded.cursor", params![conversation.to_string(), page.next_cursor]).map_err(|_| ClientError::Storage)?;
-            Ok(transient)
+            Ok(AppliedPage{transient,skipped_stale_applications})
         })
     }
 

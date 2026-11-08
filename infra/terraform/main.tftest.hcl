@@ -22,3 +22,16 @@ run "pilot_safety_defaults" {
     error_message = "Keep operational logs on a bounded retention schedule."
   }
 }
+
+run "account_login_requires_mfa_and_code_flow" {
+  command = plan
+  variables { lambda_zip = "main.tf" }
+  assert {
+    condition     = aws_cognito_user_pool.accounts.mfa_configuration == "ON" && aws_cognito_user_pool.accounts.admin_create_user_config[0].allow_admin_create_user_only
+    error_message = "Accounts must be invited and require MFA."
+  }
+  assert {
+    condition     = !aws_cognito_user_pool_client.app.generate_secret && length(aws_cognito_user_pool_client.app.allowed_oauth_flows) == 1 && contains(aws_cognito_user_pool_client.app.allowed_oauth_flows, "code") && aws_cognito_user_pool_client.app.access_token_validity == 5
+    error_message = "Use a public code-flow client with short-lived access tokens."
+  }
+}

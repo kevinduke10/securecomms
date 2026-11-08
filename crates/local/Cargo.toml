@@ -17,6 +17,8 @@ anyhow.workspace = true
 clap.workspace = true
 base64.workspace = true
 hex.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
 rand = "0.8"
 zeroize = "1"
 tower-http = { version = "0.6", features = ["fs", "set-header"] }

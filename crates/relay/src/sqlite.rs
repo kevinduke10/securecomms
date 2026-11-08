@@ -100,6 +100,160 @@ fn conversation(
 
 #[async_trait]
 impl Store for SqliteStore {
+    async fn revoke_owned_device(
+        &self,
+        actor: &Principal,
+        account_id: &str,
+        device: DeviceId,
+    ) -> Result<()> {
+        let actor = actor.clone();
+        let account_id = account_id.to_string();
+        self.transaction(move |tx| {
+            active(tx, &actor)?;
+            let document: Option<String> = tx
+                .query_row(
+                    "SELECT document FROM accounts WHERE id=?1",
+                    [account_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|_| StoreError::Unavailable)?;
+            let mut record: identity::AccountRecord =
+                serde_json::from_str(&document.ok_or(StoreError::NotFound)?)
+                    .map_err(|_| StoreError::Unavailable)?;
+            record.can_approve(&actor)?;
+            if !record.devices.iter().any(|d| d.binding.device_id == device) {
+                return Err(StoreError::NotFound);
+            }
+            for entry in &mut record.devices {
+                if entry.binding.device_id == device {
+                    entry.revoked = true;
+                }
+            }
+            tx.execute(
+                "UPDATE accounts SET document=?2 WHERE id=?1",
+                params![
+                    record.grant.id(),
+                    serde_json::to_string(&record).map_err(|_| StoreError::Unavailable)?
+                ],
+            )
+            .map_err(|_| StoreError::Unavailable)?;
+            tx.execute(
+                "UPDATE devices SET revoked=1 WHERE tenant=?1 AND device=?2",
+                params![actor.tenant_id.to_string(), device.to_string()],
+            )
+            .map_err(|_| StoreError::Unavailable)?;
+            Ok(())
+        })
+        .await
+    }
+    async fn grant_account(&self, grant: identity::AccountGrant) -> Result<()> {
+        let record = identity::AccountRecord::new(grant)?;
+        self.transaction(move |tx| {
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT document FROM accounts WHERE id=?1",
+                    [record.grant.id()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|_| StoreError::Unavailable)?;
+            if let Some(existing) = existing {
+                let previous: identity::AccountRecord =
+                    serde_json::from_str(&existing).map_err(|_| StoreError::Unavailable)?;
+                if previous.grant == record.grant {
+                    return Ok(());
+                }
+                return Err(StoreError::Conflict);
+            }
+            if let Some(binding) = &record.grant.bootstrap_device {
+                active(
+                    tx,
+                    &Principal {
+                        tenant_id: record.grant.tenant_id,
+                        device_id: binding.device_id,
+                        role: record.grant.role,
+                    },
+                )?;
+            }
+            tx.execute(
+                "INSERT INTO accounts(id,document) VALUES(?1,?2)",
+                params![
+                    record.grant.id(),
+                    serde_json::to_string(&record).map_err(|_| StoreError::Unavailable)?
+                ],
+            )
+            .map_err(|_| StoreError::Unavailable)?;
+            Ok(())
+        })
+        .await
+    }
+    async fn account(&self, id: &str) -> Result<identity::AccountRecord> {
+        let id = id.to_string();
+        self.transaction(move |tx| {
+            let document: Option<String> = tx
+                .query_row("SELECT document FROM accounts WHERE id=?1", [id], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .map_err(|_| StoreError::Unavailable)?;
+            let record: identity::AccountRecord =
+                serde_json::from_str(&document.ok_or(StoreError::Unauthorized)?)
+                    .map_err(|_| StoreError::Unavailable)?;
+            record.active()?;
+            Ok(record)
+        })
+        .await
+    }
+    async fn request_enrollment(
+        &self,
+        id: &str,
+        input: croaker_protocol::enrollment::EnrollmentInput,
+    ) -> Result<()> {
+        let id = id.to_string();
+        self.transaction(move |tx| {
+            let document: Option<String> = tx
+                .query_row("SELECT document FROM accounts WHERE id=?1", [&id], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .map_err(|_| StoreError::Unavailable)?;
+            let mut record: identity::AccountRecord =
+                serde_json::from_str(&document.ok_or(StoreError::Unauthorized)?)
+                    .map_err(|_| StoreError::Unavailable)?;
+            record.request(input)?;
+            tx.execute(
+                "UPDATE accounts SET document=?2 WHERE id=?1",
+                params![
+                    id,
+                    serde_json::to_string(&record).map_err(|_| StoreError::Unavailable)?
+                ],
+            )
+            .map_err(|_| StoreError::Unavailable)?;
+            Ok(())
+        })
+        .await
+    }
+    async fn decide_enrollment(
+        &self,
+        actor: &Principal,
+        account_id: &str,
+        id: MessageId,
+        fingerprint: &str,
+        approve: bool,
+    ) -> Result<()> {
+        let actor = actor.clone();
+        let account_id = account_id.to_string();
+        let fingerprint = fingerprint.to_string();
+        self.transaction(move |tx| {active(tx,&actor)?;
+            let document:Option<String>=tx.query_row("SELECT document FROM accounts WHERE id=?1",[&account_id],|r|r.get(0)).optional().map_err(|_|StoreError::Unavailable)?;
+            let mut record:identity::AccountRecord=serde_json::from_str(&document.ok_or(StoreError::NotFound)?).map_err(|_|StoreError::Unavailable)?;
+            if let Some((principal,hash))=record.decide(&actor,id,&fingerprint,approve)? {
+                tx.execute("INSERT INTO devices(tenant,device,token_hash,principal,revoked) VALUES(?1,?2,?3,?4,0)",params![principal.tenant_id.to_string(),principal.device_id.to_string(),hash,serde_json::to_string(&principal).map_err(|_|StoreError::Unavailable)?]).map_err(|e|match e {rusqlite::Error::SqliteFailure(error,_) if error.code==rusqlite::ErrorCode::ConstraintViolation=>StoreError::Conflict,_=>StoreError::Unavailable})?;
+            }
+            tx.execute("UPDATE accounts SET document=?2 WHERE id=?1",params![account_id,serde_json::to_string(&record).map_err(|_|StoreError::Unavailable)?]).map_err(|_|StoreError::Unavailable)?;Ok(())
+        }).await
+    }
     async fn authenticate(&self, token: &str) -> Result<Principal> {
         let hash = token_hash(token);
         self.transaction(move |tx| {
@@ -175,6 +329,45 @@ impl Store for SqliteStore {
         }).await
     }
 
+    async fn conversation_info(
+        &self,
+        actor: &Principal,
+        id: ConversationId,
+    ) -> Result<Conversation> {
+        let actor = actor.clone();
+        self.transaction(move |tx| conversation(tx, &actor, id).map(|(group, _)| group))
+            .await
+    }
+    async fn admit(
+        &self,
+        actor: &Principal,
+        id: ConversationId,
+        input: membership::GroupAdmission,
+    ) -> Result<membership::AcceptedAdmission> {
+        input.validate().map_err(StoreError::Invalid)?;
+        let actor = actor.clone();
+        self.transaction(move |tx| {
+            let (group,current)=conversation(tx,&actor,id)?;
+            if group.owner!=actor.device_id {return Err(StoreError::NotFound);}
+            let fingerprint=admission_hash(&input);
+            let previous:Option<(String,u64,u64)>=tx.query_row("SELECT fingerprint,commit_sequence,welcome_sequence FROM group_admissions WHERE tenant=?1 AND conversation=?2 AND request_id=?3",params![actor.tenant_id.to_string(),id.to_string(),input.request_id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|_|StoreError::Unavailable)?;
+            if let Some((hash,commit_sequence,welcome_sequence))=previous {
+                return if hash==fingerprint {Ok(membership::AcceptedAdmission{commit_sequence,welcome_sequence,duplicate:true})}else{Err(StoreError::Conflict)};
+            }
+            let next=validate_admission(&actor,&group,&input)?;
+            let active_added:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM devices WHERE tenant=?1 AND device=?2 AND revoked=0)",params![actor.tenant_id.to_string(),input.added_device.to_string()],|r|r.get(0)).map_err(|_|StoreError::Unavailable)?;
+            if !active_added {return Err(StoreError::NotFound);}
+            let timestamp=now();
+            for (offset,event) in [(1,input.commit.clone()),(2,input.welcome.clone())] {
+                let stored=StoredEvent{sequence:current+offset,sender:actor.device_id,submitted_at:timestamp,expires_at:timestamp+RETENTION_SECONDS,event};
+                tx.execute("INSERT INTO events(tenant,conversation,sequence,sender,message_id,fingerprint,payload,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![actor.tenant_id.to_string(),id.to_string(),stored.sequence,actor.device_id.to_string(),stored.event.message_id.to_string(),event_hash(&stored.event),serde_json::to_string(&stored).map_err(|_|StoreError::Unavailable)?,stored.expires_at]).map_err(|e|match e {rusqlite::Error::SqliteFailure(error,_) if error.code==rusqlite::ErrorCode::ConstraintViolation=>StoreError::Conflict,_=>StoreError::Unavailable})?;
+            }
+            tx.execute("UPDATE conversations SET metadata=?3,sequence=?4 WHERE tenant=?1 AND id=?2",params![actor.tenant_id.to_string(),id.to_string(),serde_json::to_string(&next).map_err(|_|StoreError::Unavailable)?,current+2]).map_err(|_|StoreError::Unavailable)?;
+            tx.execute("INSERT INTO conversation_joins(tenant,conversation,device,after_sequence) VALUES(?1,?2,?3,?4)",params![actor.tenant_id.to_string(),id.to_string(),input.added_device.to_string(),current+1]).map_err(|_|StoreError::Unavailable)?;
+            tx.execute("INSERT INTO group_admissions(tenant,conversation,request_id,fingerprint,commit_sequence,welcome_sequence) VALUES(?1,?2,?3,?4,?5,?6)",params![actor.tenant_id.to_string(),id.to_string(),input.request_id.to_string(),fingerprint,current+1,current+2]).map_err(|_|StoreError::Unavailable)?;
+            Ok(membership::AcceptedAdmission{commit_sequence:current+1,welcome_sequence:current+2,duplicate:false})
+        }).await
+    }
     async fn append(
         &self,
         actor: &Principal,
@@ -212,6 +405,8 @@ impl Store for SqliteStore {
         let actor = actor.clone();
         self.transaction(move |tx| {
             let (_, latest) = conversation(tx, &actor, id)?;
+            let floor:Option<u64>=tx.query_row("SELECT after_sequence FROM conversation_joins WHERE tenant=?1 AND conversation=?2 AND device=?3",params![actor.tenant_id.to_string(),id.to_string(),actor.device_id.to_string()],|row|row.get(0)).optional().map_err(|_|StoreError::Unavailable)?;
+            let cursor=cursor.max(floor.unwrap_or(0));
             if cursor > latest { return Err(StoreError::Invalid("cursor is ahead of conversation")); }
             let mut stmt = tx.prepare("SELECT payload FROM events WHERE tenant=?1 AND conversation=?2 AND sequence>?3 AND payload IS NOT NULL ORDER BY sequence LIMIT ?4").map_err(|_| StoreError::Unavailable)?;
             let rows = stmt.query_map(params![actor.tenant_id.to_string(), id.to_string(), cursor, limit + 1], |r| r.get::<_, String>(0)).map_err(|_| StoreError::Unavailable)?;

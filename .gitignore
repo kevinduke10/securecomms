@@ -15,5 +15,9 @@
 *.local.json
 .DS_Store
 **/test-results/
+**/test-results-auth/
 **/playwright-report/
 *.tsbuildinfo
+
+# User-held encrypted history exports (never commit recovery material).
+*.crkbackup

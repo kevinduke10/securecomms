@@ -2,7 +2,7 @@
 
 ## Product direction
 
-Croaker targets small/mid-size businesses, up to 1,000 seats per tenant and 500
+Cirra targets small/mid-size businesses, up to 1,000 seats per tenant and 500
 users per group. The product will support hosted SaaS and independent customer AWS
 accounts, enterprise SSO, external guests, and mobile/desktop clients sharing a
 Rust core. Those product capacities are targets, not benchmarked guarantees. This
@@ -20,16 +20,33 @@ flowchart LR
 
 The Lambda artifact depends on relay/protocol crates, not the crypto/client
 crates. Decryption keys never belong on the relay. OpenMLS implements MLS;
-Croaker does not invent a messaging cipher or claim Signal interoperability,
+Cirra does not invent a messaging cipher or claim Signal interoperability,
 Signal's post-quantum properties, or Signal's metadata protections.
 
 ## Identity and authorization in this milestone
 
-Operators register a tenant ID, device ID, role, and random 256-bit bearer token
-using a local database or AWS IAM credentials. Only SHA-256 token digests are stored
-for lookup. The public API cannot provision devices. Tokens are per device,
-require HTTPS remotely, and remain valid until revoked; short-lived sessions,
-enrollment approvals, and SSO are still to be implemented.
+Cognito authenticates invited accounts with authorization code + S256 PKCE and
+required MFA. The relay validates access-token signatures/issuer/client/use/scope
+and token times, then resolves an operator-granted immutable issuer/subject to a
+tenant and role. Email and client-supplied tenant claims do not grant membership.
+Terraform defines this infrastructure; live deployment remains unverified.
+
+Account JWTs authorize reading account state and submitting signed enrollment
+requests. Messaging and enrollment approval require separate active device bearer
+credentials. Requests prove possession of a fresh device signing key and bind the
+account, tenant, device, label, request ID, and credential digest. Pending devices
+cannot message. An active same-account device or same-tenant administrator confirms
+the full fingerprint; the decision, public binding, and device registration commit
+atomically in SQLite/DynamoDB. Requests expire after ten minutes. Approval grants
+no existing conversation access or MLS keys. A replacement can revoke another
+owned device's relay access; cryptographic removal remains separate.
+
+Operators retain an IAM/local registration path for initial administrator devices
+and immutable account grants. Only SHA-256 device-token digests are stored. Tokens
+remain valid until revoked; Cognito access tokens last five minutes and offline
+JWT validation cannot detect upstream revocation before expiry. Enterprise
+federation, account lifecycle UI, native key storage, and full group rejoining are
+still pending. See [login setup](login-and-enrollment.md) and [ADR-0010](adr/0010-account-login-and-replacement-device-enrollment.md).
 
 The server derives tenant and device identity from the credential registry, not
 from request parameters. It checks active registration and conversation membership
@@ -47,9 +64,24 @@ key directory must not silently treat server-provided public keys as verified.
 
 Membership approvals are explicit. General commits are rejected by the application
 message API. The implemented removal path requires a pinned authority and the
-exact approved removed device; it rejects unrelated proposals. Adding members to
-an established active group, concurrent commits, owner transfer, and automated
-roster reconciliation still need their product workflows.
+exact approved removed device; it rejects unrelated proposals. Single-device
+addition now requires an explicit pinned owner decision and the exact added
+identity. The relay atomically updates its expected roster and appends the Add
+commit plus an addressed Welcome, with a newcomer sequence floor. The client
+persists MLS state with both saved ciphertexts before publishing and uses an
+encrypted owner journal for local approval/recovery. Recipients accept only the
+corresponding approved Add, never general relay-provided commits. See
+[ADR-0013](adr/0013-approved-group-admission.md). Concurrent owner operations,
+owner transfer, and general automated roster reconciliation remain unimplemented.
+
+Membership updates retain one prior MLS epoch. A well-framed same-group private
+application older than the greater of its authenticated join epoch or retained
+epoch floor cannot be decrypted; it advances only the receive cursor and a durable
+unavailable-update counter. It creates no plaintext history or receipts. Current/
+future-epoch authentication errors, wrong groups, and malformed frames still roll
+back the page. This bounds stale-update blockage but trades one retained epoch of
+forward secrecy for late delivery; older offline envelopes can be unavailable
+after multiple membership changes. Never re-encrypt ambiguous saved sends.
 
 **Revoking server access is not cryptographic removal.** Remaining clients must
 apply an MLS removal commit before sending sensitive new content. Previously
@@ -59,8 +91,9 @@ and loss of access to newly rotated group keys.
 ## Delivery, retries, and storage
 
 The public API uses `/v1` and carries protocol version 1. Encrypted event bytes are
-base64-encoded and capped at 64 KiB decoded; HTTP request bodies are capped at
-96 KiB. A sync page scans at most 32 events, keeping worst-case responses below
+base64-encoded and capped at 64 KiB decoded; ordinary event HTTP bodies are capped at
+96 KiB. Group admission bodies are capped at 128 KiB, with the combined commit/
+Welcome ciphertext limited to 64 KiB. A sync page scans at most 32 events, keeping worst-case responses below
 Lambda's synchronous payload limit. The current cursor is a numeric conversation
 sequence, always interpreted within the authenticated tenant and conversation.
 
@@ -119,7 +152,15 @@ payload; SVG/HTML are not rendered as inline documents. They are not S3 uploads.
 The harness pauses relay traffic per account when “Go offline” is selected. Sends
 remain in the encrypted client state/outbox and flush on reconnection. Polling
 syncs only the account being viewed, so inactive/offline accounts are not secretly
-advanced by another tab. Fresh workspaces include seeded conversations to make
+advanced by another tab. Local startup now gates the client bridge with sign-in sessions and checks profile
+ownership on every route, including backups. Demo sign-in chooses a local owner
+without a password and is explicitly labeled. Cognito mode disables that endpoint,
+uses hosted PKCE login and short-lived HttpOnly cookie sessions, and requires an
+operator subject mapping. A replacement gets a distinct encrypted client store;
+its private candidate record is saved before submission and activated only after
+approval. This still hosts all demo client keys on one Mac. Explicit unrestricted
+autologin is only a development/test opt-in and is forbidden with Cognito.
+Fresh workspaces include seeded conversations to make
 the UI immediately testable. Workspace metadata and messages persist across restart.
 
 Reactions are encrypted MLS application events referencing the target message and
@@ -136,6 +177,21 @@ searchable local catalog of 1,914 emoji with name/keyword matching. The expanded
 catalog loads only when requested. The UI and Rust validator share the same bundled
 catalog so non-default choices remain valid through sync and restart.
 
+Replies are encrypted application events containing message-ID/sender references
+and ordinary content, never peer-supplied quoted text. Local projection resolves
+quotes only from earlier authenticated same-conversation history. Portable archives
+preserve optional references and resolve them from earlier archived rows.
+
+Delivery/read receipts are encrypted absolute per-device state referencing bounded
+sets of authenticated messages. Delivery follows committed client receipt; read
+sharing defaults off and is emitted only for visible incoming bubbles in a focused
+conversation. Background views, dialogs, and obscured content do not mark messages
+read. Pending receipt envelopes persist/retry atomically; they are not chat rows,
+previews, unread entries, or recursively acknowledged controls. Group status counts
+are per device and do not imply every current member received pre-admission history.
+Disabling read sharing stops new creation, not already queued or sent receipts.
+See [ADR-0014](adr/0014-encrypted-replies-and-receipts.md).
+
 Typing signals also use encrypted MLS application events, containing only an
 active flag and an expiry, never draft text. Active pulses are throttled to once
 every two seconds, stop after browser inactivity/blur/send, and expire after six
@@ -148,8 +204,21 @@ retention window; expiry refers to the indicator, not immediate transport deleti
 
 Device vaults contain live MLS secrets. They are **not** user recovery backups:
 never roll one back after sending, clone it onto an active second device, or
-implement recovery by copying its cryptographic state. The future backup format
-must restore history and enroll a fresh device without resurrecting old ratchets.
+implement recovery by copying its cryptographic state. Portable `.crkbackup` recovery files now export delivered history and attachments,
+participant labels, and projected reactions. A random user-held recovery code wraps
+a fresh archive data key using HKDF-SHA256 and XChaCha20-Poly1305; the complete
+archive and header are authenticated. The bounded version-1 format caps plaintext
+at 16 MiB and excludes identity keys, MLS state, credentials, pending events, and
+cursors. Codes are not persisted by the app. The loopback UI confirms the code
+before export and restores validated history into separate, encrypted read-only
+archive rows. Restore is idempotent, rejects conflicting archive IDs, and cannot
+change live identities or group membership. Recovered sender labels are archive
+claims, not newly verified identities. Original exported files must be retained;
+recovered archives are not recursively backed up. See [ADR-0009](adr/0009-user-held-history-backup-files.md).
+Automatic S3 backups, production account recovery, OS secure key storage, and
+isolated native-client enrollment remain pending; the relay/local replacement
+approval workflow is implemented. Those workflows must enroll a fresh
+device without resurrecting old ratchets.
 
 ## Threat model and release requirements
 
@@ -166,7 +235,8 @@ can attempt substitution, which is why pinned identity verification is required.
 Compromised endpoints, stolen OS sessions, screenshots, malicious app updates,
 traffic analysis, and availability attacks are outside these guarantees.
 
-Before commercial release: complete enrollment/SSO and key verification; isolate
+Before commercial release: acceptance-test/deploy account login/enrollment,
+complete enterprise federation and native key verification; isolate
 client secrets from UI permissions; implement safe recovery; add quota/abuse
 controls, lifecycle/deletion workflows, backup
 restore drills, dependency/license checks, signed distribution, performance/cost
