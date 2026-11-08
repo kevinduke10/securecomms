@@ -41,3 +41,9 @@ CREATE TABLE IF NOT EXISTS conversation_joins (
  tenant TEXT NOT NULL, conversation TEXT NOT NULL, device TEXT NOT NULL, after_sequence INTEGER NOT NULL,
  PRIMARY KEY(tenant,conversation,device)
 );
+
+CREATE TABLE IF NOT EXISTS group_lifecycle (
+ tenant TEXT NOT NULL, conversation TEXT NOT NULL, request_id TEXT NOT NULL,
+ actor TEXT NOT NULL, fingerprint TEXT NOT NULL, sequence INTEGER NOT NULL,
+ PRIMARY KEY(tenant,conversation,request_id)
+);

@@ -147,3 +147,6 @@ pub struct ApiError {
 
 pub mod enrollment;
 pub mod membership;
+
+pub mod lifecycle;
+pub mod media;

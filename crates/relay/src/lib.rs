@@ -185,6 +185,12 @@ pub trait Store: Send + Sync {
         id: ConversationId,
         input: membership::GroupAdmission,
     ) -> Result<membership::AcceptedAdmission>;
+    async fn lifecycle(
+        &self,
+        actor: &Principal,
+        id: ConversationId,
+        input: croaker_protocol::lifecycle::GroupLifecycle,
+    ) -> Result<croaker_protocol::lifecycle::AcceptedLifecycle>;
     async fn append(
         &self,
         actor: &Principal,
@@ -199,3 +205,6 @@ pub trait Store: Send + Sync {
         limit: usize,
     ) -> Result<SyncPage>;
 }
+
+pub mod lifecycle;
+pub mod media;

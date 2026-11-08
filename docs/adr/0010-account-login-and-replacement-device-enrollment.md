@@ -146,3 +146,5 @@ made. Preserve existing client databases during upgrades and replacement tests.
   [local session/PKCE/enrollment tests](../../crates/local/tests/login_enrollment.rs),
   [browser checks](../../apps/ui/tests/login-enrollment.spec.ts), and
   [Terraform safety assertions](../../infra/terraform/main.tftest.hcl).
+
+Subsequent [ADR-0015](0015-independent-desktop-client.md) and [ADR-0018](0018-ios-client-and-native-platform-bridge.md) add native account sign-in, Keychain-backed independent devices, and approved enrollment. Live Cognito acceptance remains pending.

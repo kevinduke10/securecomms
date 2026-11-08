@@ -1,0 +1,81 @@
+/* Security tools share one responsive layout across web, desktop and iOS. */
+dialog.security-dialog { width:760px; height:min(760px, calc(100dvh - 48px)); padding:0; overflow:hidden; }
+.security-dialog[open] { display:flex; flex-direction:column; }
+.security-dialog .modal-head { flex:none; padding:18px 24px; margin:0; border-bottom:1px solid var(--line); gap:16px; }
+.security-dialog .modal-head .icon-button { flex:none; width:40px; height:40px; }
+.security-content { display:flex; flex:1; flex-direction:column; min-height:0; min-width:0; }
+.security-tabs { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:4px; padding:12px 20px; border-bottom:1px solid var(--line); flex:none; background:var(--surface); }
+.security-tabs button { min-height:42px; padding:8px 10px; display:flex; gap:8px; align-items:center; justify-content:center; font-size:12px; color:var(--muted); border-radius:8px; }
+.security-tabs button:hover { background:var(--soft); }
+.security-tabs button[aria-selected=true] { background:var(--selected); color:var(--text); font-weight:600; }
+.security-body { overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; min-height:0; padding:24px; scrollbar-width:thin; }
+.security-panel { min-width:0; }
+.security-panel[hidden] { display:none; }
+.security-stack { display:flex; flex-direction:column; gap:20px; min-width:0; }
+.security-section-heading h3 { font-size:17px; margin:0; font-weight:600; letter-spacing:-.3px; }
+.security-section-heading p,.security-card-heading p { margin:6px 0 0; color:var(--muted); font-size:12px; line-height:1.7; }
+.security-card { border:1px solid var(--line); border-radius:12px; padding:18px; min-width:0; background:var(--surface); }
+.security-card h4,.security-card-heading h4 { margin:0; font-size:13px; font-weight:600; }
+.security-card-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:16px; }
+.security-card-heading>div { min-width:0; }
+.security-count { padding:3px 8px; border-radius:6px; background:var(--soft); font-size:11px; }
+.security-form { display:flex; flex-direction:column; gap:18px; }
+.security-form .security-card-heading { margin-bottom:0; }
+.security-panel .field-label { margin:0; font-size:12px; font-weight:550; display:flex; flex-direction:column; gap:8px; }
+.security-panel .field-label input,.security-panel textarea { margin:0; min-width:0; width:100%; border:1px solid var(--line); border-radius:8px; padding:11px 12px; font-size:13px; line-height:1.6; color:var(--text); background:var(--surface); outline-color:var(--focus); }
+.security-panel textarea { font-family:ui-monospace,monospace; resize:vertical; min-height:112px; max-height:280px; }
+.security-form-footer { display:flex; justify-content:flex-end; }
+.security-panel .primary-button,.security-panel .secondary-button { min-height:40px; display:inline-flex; align-items:center; justify-content:center; gap:7px; white-space:normal; line-height:1.5; }
+.security-card>.secondary-button { margin-bottom:0; }
+.security-card>.security-value { margin-top:16px; }
+.security-value { min-width:0; max-width:100%; padding:12px 14px; border:1px solid var(--line); border-radius:9px; background:var(--soft); text-align:left; }
+.security-value-head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px; font-size:11px; font-weight:550; line-height:1.5; color:var(--muted); }
+.security-value-head>span { min-width:0; }
+.security-copy { display:inline-flex; align-items:center; gap:5px; flex:none; padding:5px 7px; min-height:32px; border:1px solid var(--line); border-radius:6px; color:var(--text); background:var(--surface); font-size:11px; }
+.security-copy:hover { border-color:var(--focus); }
+.security-value code,.security-value .device-fingerprint { display:block; margin:0; padding:0; background:transparent; border-radius:0; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; font:12px/1.9 ui-monospace,monospace; user-select:text; -webkit-user-select:text; }
+.security-value textarea { width:100%; min-width:0; max-height:240px; resize:vertical; border:1px solid var(--line); border-radius:6px; background:var(--surface); color:var(--text); font:11px/1.7 ui-monospace,monospace; padding:10px; overflow-wrap:anywhere; word-break:break-all; }
+.security-copy-status { display:block; margin-top:7px; font-size:11px; color:var(--muted); overflow-wrap:anywhere; }
+.security-device-list { display:flex; flex-direction:column; gap:12px; }
+.security-dialog .device-approved { margin:0; padding:0; border:0; border-radius:0; gap:12px; }
+.security-device-icon { display:flex!important; flex:0 0 36px!important; width:36px; height:36px; border-radius:10px; align-items:center; justify-content:center; background:var(--soft); color:var(--muted); }
+.security-dialog .device-approved strong { font-size:12px; line-height:1.5; }
+.security-dialog .device-approved small { font-size:11px; line-height:1.5; }
+.security-dialog .device-approved .secondary-button { font-size:11px; padding:8px 10px; }
+.security-dialog .device-enrollment { display:flex; flex-direction:column; gap:16px; padding:18px; margin:0 0 12px; }
+.security-dialog .device-enrollment:last-child { margin-bottom:0; }
+.security-dialog .device-enrollment-title { align-items:flex-start; font-size:13px; line-height:1.6; }
+.security-badge { flex:none; background:var(--soft); border-radius:6px; padding:3px 8px; font-size:11px; }
+.security-badge.is-pending { background:var(--warning-bg); color:var(--warning)!important; }
+.security-dialog .device-actions { flex-wrap:wrap; gap:8px; }
+.security-dialog .device-admin-lookup { border:0; padding-top:16px; }
+.security-disclosure summary { cursor:pointer; font-size:12px; font-weight:550; line-height:1.7; }
+.security-empty { font-size:12px; color:var(--muted); line-height:1.7; margin:0; }
+.security-dialog .device-request { background:var(--surface); }
+.setup-relay { overflow-wrap:anywhere; word-break:break-word; }
+.setup-actions { display:flex; flex-wrap:wrap; gap:10px; margin:18px 0; }
+.setup-actions>button { min-width:0; max-width:100%; white-space:normal; line-height:1.5; }
+.login-card { min-width:0; }
+.login-card .security-value { margin:14px 0; }
+.login-card>p { overflow-wrap:anywhere; }
+@media(max-width:540px) {
+ dialog.security-dialog { width:calc(100vw - 24px); max-width:calc(100vw - 24px); height:calc(100dvh - 24px); max-height:calc(100dvh - 24px); padding:0; border-radius:14px; }
+ .security-dialog .modal-head { padding:12px 16px; }
+ .security-dialog .modal-head h2 { font-size:18px; }
+ .security-tabs { padding:10px 12px; gap:3px; }
+ .security-tabs button { min-height:48px; flex-direction:column; gap:5px; padding:6px 2px; font-size:11px; }
+ .security-body { padding:18px 14px; }
+ .security-stack { gap:16px; }
+ .security-card,.security-dialog .device-enrollment { padding:14px; }
+ .security-panel .field-label input,.security-panel .field-label textarea { font-size:16px; }
+ .security-panel .device-approved { flex-wrap:wrap; }
+ .security-panel .device-approved>span:not(.security-device-icon) { flex-basis:calc(100% - 84px); }
+ .security-panel .device-approved .secondary-button { margin-left:48px; }
+ .security-copy { min-height:36px; }
+ .security-value { padding:10px 12px; }
+ .security-form-footer>button { width:100%; }
+ .setup-actions { flex-direction:column; align-items:stretch; }
+}
+
+.login-page { grid-template-columns:minmax(0,1fr); justify-items:center; }
+@media(max-width:540px) { .login-card { padding:24px; } }

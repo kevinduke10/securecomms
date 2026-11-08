@@ -291,6 +291,33 @@ impl Device {
         welcome: &[u8],
         peers: &[DeviceBinding],
     ) -> Result<()> {
+        self.join_checked(conversation, welcome, peers, None)
+    }
+
+    /// Join only an exact roster authorized by the pinned Welcome author.
+    pub fn join_authorized(
+        &mut self,
+        conversation: ConversationId,
+        welcome: &[u8],
+        peers: &[DeviceBinding],
+        authority: &DeviceBinding,
+        expected_members: &[DeviceId],
+    ) -> Result<()> {
+        self.join_checked(
+            conversation,
+            welcome,
+            peers,
+            Some((authority, expected_members)),
+        )
+    }
+
+    fn join_checked(
+        &mut self,
+        conversation: ConversationId,
+        welcome: &[u8],
+        peers: &[DeviceBinding],
+        authorization: Option<(&DeviceBinding, &[DeviceId])>,
+    ) -> Result<()> {
         if self.groups.contains_key(&conversation) || welcome.len() > MAX_CIPHERTEXT_BYTES {
             return Err(CryptoError::InvalidInput);
         }
@@ -319,6 +346,38 @@ impl Device {
             });
         if !matches {
             return Err(CryptoError::IdentityMismatch);
+        }
+        if let Some((authority, expected_members)) = authorization {
+            let sender = checked(staged.welcome_sender(), "authenticate welcome author")?;
+            if authority.tenant_id != self.binding.tenant_id
+                || sender.credential() != &authority.credential().credential
+                || sender.signature_key().as_slice() != authority.signature_key
+            {
+                return Err(CryptoError::IdentityMismatch);
+            }
+            let prefix = format!("croaker:v1:{}:", self.binding.tenant_id);
+            let mut actual = staged
+                .members()
+                .map(|member| {
+                    let credential = BasicCredential::try_from(member.credential)
+                        .map_err(|_| CryptoError::IdentityMismatch)?;
+                    std::str::from_utf8(credential.identity())
+                        .ok()
+                        .and_then(|text| text.strip_prefix(&prefix))
+                        .and_then(|id| id.parse::<DeviceId>().ok())
+                        .ok_or(CryptoError::IdentityMismatch)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            actual.sort();
+            let mut expected = expected_members.to_vec();
+            expected.sort();
+            expected.dedup();
+            if expected.len() != expected_members.len()
+                || expected != actual
+                || !expected.contains(&authority.device_id)
+            {
+                return Err(CryptoError::IdentityMismatch);
+            }
         }
         let group = checked(staged.into_group(&self.provider), "join group")?;
         self.groups.insert(conversation, group);
@@ -871,3 +930,6 @@ mod tests {
         );
     }
 }
+
+pub mod lifecycle;
+pub mod media;

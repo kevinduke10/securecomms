@@ -13,7 +13,9 @@
     "build:ui": "npm run build --workspace @croaker/ui",
     "test:ui": "npm run test:e2e --workspace @croaker/ui",
     "generate:emoji": "node scripts/generate-emoji-data.mjs",
-    "test:auth": "npm run test:e2e --workspace @croaker/ui -- --config=playwright.auth.config.ts"
+    "test:auth": "npm run test:e2e --workspace @croaker/ui -- --config=playwright.auth.config.ts",
+    "dev:desktop": "bash scripts/start-desktop.sh",
+    "test:browser": "npm run test:e2e --workspace @croaker/ui -- --config=playwright.browser.config.ts"
   },
   "devDependencies": {
     "emojilib": "4.0.3",

@@ -22,6 +22,7 @@ fn archive() -> Archive {
             members: vec![source],
             messages: vec![Message {
                 reply_to: None,
+                media_omitted: None,
                 id: MessageId::new(),
                 sender: source,
                 sent_at: 1_800_000_000,
@@ -188,6 +189,7 @@ fn export_stops_at_the_documented_archive_size_limit() {
     source.conversations[0].messages = (0..2200)
         .map(|_| Message {
             reply_to: None,
+            media_omitted: None,
             id: MessageId::new(),
             sender: template.sender,
             sent_at: template.sent_at,
@@ -242,4 +244,58 @@ fn history_archives_preserve_reply_references_and_accept_older_messages() {
         sender: first.sender,
     });
     assert!(source.validate().is_err());
+}
+
+#[test]
+fn object_media_backup_retains_only_validated_omission_metadata() {
+    let mut source = archive();
+    let message = &mut source.conversations[0].messages[0];
+    message.text.clear();
+    message.attachment = None;
+    message.media_omitted = Some(OmittedMedia {
+        name: "clip.mp4".into(),
+        mime: "video/mp4".into(),
+        size: 24 * 1024 * 1024,
+    });
+    source.validate().unwrap();
+    let code = RecoveryCode::generate();
+    let restored = decrypt(&encrypt(&source, &code).unwrap(), &code).unwrap();
+    assert_eq!(
+        restored.conversations[0].messages[0]
+            .media_omitted
+            .as_ref()
+            .unwrap()
+            .name,
+        "clip.mp4"
+    );
+    let serialized = serde_json::to_value(&restored).unwrap();
+    let media = &serialized["conversations"][0]["messages"][0]["media_omitted"];
+    assert_eq!(media.as_object().unwrap().len(), 3);
+    for forbidden in ["key", "object_id", "sha256", "ciphertext_size", "url"] {
+        assert!(media.get(forbidden).is_none());
+    }
+    let mut injected = serialized.clone();
+    injected["conversations"][0]["messages"][0]["media_omitted"]["key"] =
+        serde_json::json!("secret");
+    assert!(serde_json::from_value::<Archive>(injected).is_err());
+    source.conversations[0].messages[0]
+        .media_omitted
+        .as_mut()
+        .unwrap()
+        .name = "../clip.mp4".into();
+    assert!(source.validate().is_err());
+    let legacy = serde_json::to_value(archive()).unwrap();
+    assert!(
+        legacy["conversations"][0]["messages"][0]
+            .get("media_omitted")
+            .is_none()
+    );
+    assert!(
+        serde_json::from_value::<Archive>(legacy)
+            .unwrap()
+            .conversations[0]
+            .messages[0]
+            .media_omitted
+            .is_none()
+    );
 }

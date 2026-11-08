@@ -64,8 +64,8 @@ test('mobile navigation, keyboard search, guest restrictions, and file limits', 
   await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Hello from a smaller screen 👋');
   await page.getByRole('textbox', { name: 'Message', exact: true }).press('Enter');
   await expect(page.locator('.message-bubble').filter({ hasText: 'Hello from a smaller screen 👋' })).toBeVisible();
-  await page.getByLabel('Choose an attachment').setInputFiles({ name: 'too-big.txt', mimeType: 'text/plain', buffer: Buffer.alloc(33 * 1024, 'a') });
-  await expect(page.getByRole('alert')).toContainText('smaller than 32 KB');
+  await page.getByLabel('Choose an attachment').setInputFiles({ name: 'too-big.txt', mimeType: 'text/plain', buffer: Buffer.alloc(25 * 1024 * 1024 + 1, 'a') });
+  await expect(page.getByRole('alert')).toContainText('25 MiB');
   await page.getByRole('button', { name: 'Dismiss notification', exact: true }).click();
   await page.getByRole('button', { name: 'Back to conversations', exact: true }).click();
   await page.keyboard.press('Control+k');

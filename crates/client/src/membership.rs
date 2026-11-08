@@ -51,7 +51,7 @@ impl ClientStore {
                 if saved.pending.conversation_id!=conversation || saved.pending.input.expected_devices!=expected_devices || saved.added!=*added || saved.package_hash!=package_hash {return Err(ClientError::AlreadyExists);}
                 return Ok(saved.pending.input);
             }
-            let pending:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE json_extract(envelope,'$.conversation_id')=?1) OR EXISTS(SELECT 1 FROM group_admissions WHERE conversation=?1 AND acknowledged=0)",[conversation.to_string()],|r|r.get(0)).map_err(|_|ClientError::Storage)?;
+            let pending:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE json_extract(envelope,'$.conversation_id')=?1) OR EXISTS(SELECT 1 FROM group_admissions WHERE conversation=?1 AND acknowledged=0) OR EXISTS(SELECT 1 FROM group_lifecycle WHERE conversation=?1 AND acknowledged=0)",[conversation.to_string()],|r|r.get(0)).map_err(|_|ClientError::Storage)?;
             if pending {return Err(ClientError::AlreadyExists);}
             let mut expected=expected_devices.to_vec();expected.sort();
             if device.conversation_devices(conversation)?!=expected {return Err(CryptoError::IdentityMismatch.into());}

@@ -205,6 +205,7 @@ impl Workspace {
             .collect();
         for alias in aliases {
             self.flush_group_admissions(&alias).await?;
+            self.flush_group_lifecycles(&alias).await?;
         }
         Ok(())
     }
@@ -255,6 +256,7 @@ impl Workspace {
             if chat.members.contains(&profile.alias) {
                 members.push(value);
             } else if chat.owner == alias
+                && self.clients[&profile.alias].cursor(conversation)? == 0
                 && self
                     .relay
                     .authenticate(&profile.token)
@@ -344,6 +346,14 @@ impl Workspace {
                     .map(|profile| profile.principal.device_id)
             })
             .collect::<Result<Vec<_>>>()?;
+        ensure!(
+            !self
+                .clients
+                .get_mut(target_alias)
+                .context("Device store unavailable.")?
+                .update(|device| Ok(device.has_conversation(conversation)))?,
+            "A previously removed device cannot rejoin with old group state. Enroll a new device first."
+        );
         let package = self
             .clients
             .get_mut(target_alias)

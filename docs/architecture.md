@@ -29,7 +29,9 @@ Cognito authenticates invited accounts with authorization code + S256 PKCE and
 required MFA. The relay validates access-token signatures/issuer/client/use/scope
 and token times, then resolves an operator-granted immutable issuer/subject to a
 tenant and role. Email and client-supplied tenant claims do not grant membership.
-Terraform defines this infrastructure; live deployment remains unverified.
+The development infrastructure is deployed in us-east-2; live health and public
+configuration checks pass. Authenticated native login and enrollment acceptance
+remain pending. See the [deployment runbook](aws-deployment.md).
 
 Account JWTs authorize reading account state and submitting signed enrollment
 requests. Messaging and enrollment approval require separate active device bearer
@@ -45,8 +47,9 @@ Operators retain an IAM/local registration path for initial administrator device
 and immutable account grants. Only SHA-256 device-token digests are stored. Tokens
 remain valid until revoked; Cognito access tokens last five minutes and offline
 JWT validation cannot detect upstream revocation before expiry. Enterprise
-federation, account lifecycle UI, native key storage, and full group rejoining are
-still pending. See [login setup](login-and-enrollment.md) and [ADR-0010](adr/0010-account-login-and-replacement-device-enrollment.md).
+federation and account lifecycle UI remain pending. The independent macOS client
+uses Keychain and explicitly approved identities; directory and membership-decision
+transport currently require verified public-package exchange. See [login setup](login-and-enrollment.md) and [ADR-0010](adr/0010-account-login-and-replacement-device-enrollment.md).
 
 The server derives tenant and device identity from the credential registry, not
 from request parameters. It checks active registration and conversation membership
@@ -72,7 +75,9 @@ persists MLS state with both saved ciphertexts before publishing and uses an
 encrypted owner journal for local approval/recovery. Recipients accept only the
 corresponding approved Add, never general relay-provided commits. See
 [ADR-0013](adr/0013-approved-group-admission.md). Concurrent owner operations,
-owner transfer, and general automated roster reconciliation remain unimplemented.
+and general automated roster reconciliation remain unimplemented. Explicit owner
+transfer/removal are implemented through authenticated lifecycle commits and an
+atomic relay operation; see [ADR-0016](adr/0016-group-owner-transfer-and-removal.md).
 
 Membership updates retain one prior MLS epoch. A well-framed same-group private
 application older than the greater of its authenticated join epoch or retained
@@ -127,6 +132,33 @@ cursor in one transaction. Failed authentication rolls back the whole page. The
 local UI supplies a stable request ID for send retries so a repeated HTTP request
 does not advance the ratchet or display the message twice.
 
+## Hosted browser client
+
+The hosted web build compiles the same Rust device/crypto/client engine through
+WebAssembly and runs it in a dedicated worker. It reuses the UI through a browser
+bridge, without deploying `croaker-local`. Each browser profile has an independently
+approved device identity. One tab holds an exclusive Web Lock for that installation.
+
+SQLite transactions run in memory. Before relay requests/object transfers and
+before returning a command result, the adapter awaits an encrypted IndexedDB
+snapshot containing the database and device profile together. A failed snapshot
+blocks further operations until reload. Previously saved outgoing ciphertext and
+inbound history/cursors recover together. The Web Crypto wrapping key is stored as
+a non-extractable CryptoKey; it encrypts the snapshot and wraps the Rust vault key.
+The complete snapshot has a 128 MiB bound.
+
+Browser storage is a different trust boundary from native Keychain storage.
+Same-origin malicious code or a compromised frontend deployment can operate the
+client, use the wrapping key and access unlocked messages. Clearing site data or
+losing its key loses the device; history backups do not restore a live identity.
+The PKCE redirect flow consumes session-bound state/verifier before exchange,
+and retains no OAuth tokens in persistent storage.
+
+Private S3/CloudFront hosting serves bundled code with CSP and HTTPS, proxies
+uncached /v1 requests to the relay, and permits private attachment CORS only from
+the web origin. See [browser setup](web.md) and
+[ADR-0020](adr/0020-browser-client-and-web-hosting.md).
+
 ## Local UI test harness
 
 `croaker-local` serves the built React UI and `/local-api` from one loopback
@@ -146,8 +178,10 @@ Requests to the local client bridge require a custom header, a loopback Host,
 an absent or same-origin Origin, and a non-cross-site Fetch Metadata header. There
 is no CORS permission for other origins. Responses disable caching and framing;
 static assets are restricted to the UI build directory. Mutations accept bounded
-JSON bodies. Attachments are capped at 32 KiB and included in the encrypted message
-payload; SVG/HTML are not rendered as inline documents. They are not S3 uploads.
+JSON bodies. Inline attachments are capped at 32 KiB; larger files up to 25 MiB
+use client-encrypted object storage. SVG/HTML are download-only and are not
+rendered as inline documents. The local harness uses a private file fixture;
+the AWS relay uses private S3 objects.
 
 The harness pauses relay traffic per account when “Go offline” is selected. Sends
 remain in the encrypted client state/outbox and flush on reconnection. Polling
@@ -215,10 +249,10 @@ archive rows. Restore is idempotent, rejects conflicting archive IDs, and cannot
 change live identities or group membership. Recovered sender labels are archive
 claims, not newly verified identities. Original exported files must be retained;
 recovered archives are not recursively backed up. See [ADR-0009](adr/0009-user-held-history-backup-files.md).
-Automatic S3 backups, production account recovery, OS secure key storage, and
-isolated native-client enrollment remain pending; the relay/local replacement
-approval workflow is implemented. Those workflows must enroll a fresh
-device without resurrecting old ratchets.
+Automatic S3 history backups and production account recovery remain pending.
+The macOS client now uses Keychain and isolated enrollment; live provider acceptance
+and distribution remain pending. Recovery must enroll a fresh device without
+resurrecting old ratchets.
 
 ## Threat model and release requirements
 
@@ -257,3 +291,51 @@ The $200 monthly AWS budget is account-wide and optionally emails at 50%, 80%, a
 100% actual usage. It does not stop resources or guarantee a maximum bill. Media,
 video, replicated environments, and support will need separate cost measurements.
 No cloud resources are created by unit tests or the Terraform mock test.
+
+## Independent desktop and object media
+
+The macOS Tauri client hosts `cirra-device` in Rust and serves only bundled assets.
+It does not run the multi-account test harness. Each installation locks a separate
+SQLite client store, keeps its vault key in Keychain, and seals device credentials,
+contact pins, group decisions, and conversation metadata in a private profile.
+Missing secure-store keys preserve existing data and fail closed. An already
+approved device can reopen its store through OS secure storage; Cognito access
+is needed for initial enrollment or account reauthentication. Signing out clears
+pending OAuth state and persists an encrypted lock across app restarts. A successful
+login with the original account is required to unlock it.
+
+OAuth state/verifier and tokens stay native. A one-use, five-minute loopback
+callback uses S256 PKCE. The renderer has guarded client routes and a native save
+panel, without general filesystem/network/process commands. Native file saving is
+explicitly user-selected. Browser downloads continue in the local harness.
+Contact/invitation/group-decision packages contain public metadata and encrypted
+MLS envelopes; full fingerprints and pinned rosters are checked before use.
+These packages currently need manual exchange. See [desktop setup](desktop.md)
+and [ADR-0015](adr/0015-independent-desktop-client.md).
+
+Files above 32 KiB, up to 25 MiB, are independently encrypted in Rust using the
+existing XChaCha20-Poly1305 primitive and versioned authenticated metadata. MLS
+carries the secret descriptor; snapshots expose only a public display summary.
+Upload reservations bind tenant, conversation, object UUID, ciphertext size/digest,
+and expiry. Active conversation membership is checked for every grant. The local
+object fixture and S3 adapter enforce immutable ciphertext; native requests never
+send device credentials to S3 or follow redirects. Files are authenticated before
+plaintext reaches the UI. Private S3 objects expire after 30 days; scoped grants
+last 60 seconds. Device/tenant daily quotas are 250 MiB/1 GiB. Confirmed uploads
+compact cached ciphertext while retaining sealed descriptor/digest retry metadata.
+History backups preserve an explicit omitted-file record, excluding object keys,
+locators, and large file bytes. See [ADR-0017](adr/0017-client-encrypted-object-attachments.md).
+
+Native packaging, real Keychain/save-panel interaction, live Cognito/S3 acceptance,
+AWS deployment, cross-platform distribution, and independent security review are
+separate validation work. A passing fixture test is not production acceptance.
+
+The iOS client uses the same engine and UI through a serialized C ABI. SwiftUI
+hosts a restricted, bundled-origin WKWebView and supplies device-only Keychain,
+ASWebAuthenticationSession and a user-selected Files export picker. The iOS OAuth
+callback is `app.cirra.ios:/oauth/callback`; state, verifier, code exchange and tokens
+remain native. Its live device store is excluded from OS/cloud backups. Foreground
+pull sync is implemented; APNs/background delivery and calls remain future work.
+See [iOS setup](ios.md) and [ADR-0018](adr/0018-ios-client-and-native-platform-bridge.md).
+
+Explicit native sign-out persists an encrypted device lock across restarts; reopening the app cannot bypass it. The original account must authenticate again to unlock the preserved device store.

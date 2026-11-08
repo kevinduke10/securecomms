@@ -6,10 +6,17 @@ Cirra is the product name (formerly the Croaker working name). Existing Rust cra
 names, CLI commands, configuration identifiers, and backup formats retain their
 `croaker` identifiers for compatibility. See [ADR-0011](docs/adr/0011-cirra-product-name.md).
 
-**Status: working local messaging UI and Rust backend prototype, not a production service.**
-The browser UI is a local test harness with three accounts backed by Rust client
-cores. Cognito login and an approved-device enrollment backend are implemented; AWS rollout,
-enterprise federation, and isolated production clients remain to be completed.
+**Status: browser/native development clients and a serverless relay prototype, not a production service.**
+The hosted browser client runs the Rust engine through WebAssembly with encrypted
+browser storage and independent device enrollment. The default localhost workflow
+remains a three-account Rust test harness. Cognito and approved-device enrollment
+are implemented; the development relay and web hosting are deployed with live
+endpoint/sign-in-page checks. Initial iOS Simulator enrollment was verified.
+Full live browser onboarding/messaging, enterprise federation, signed distribution
+and production acceptance remain to be completed.
+An independent macOS desktop client now uses its own Rust device store and Keychain
+vault key; see [desktop setup](docs/desktop.md). It requires a configured relay,
+Cognito account grant, and explicit device approval.
 
 Contributors and AI agents: read the [Architecture Decision Records](docs/adr/README.md)
 and [AGENTS.md](AGENTS.md) before changing established design choices. Maintain the
@@ -37,7 +44,8 @@ steps, see [login and enrollment](docs/login-and-enrollment.md).
   approve it, and activate its separate client. It must be explicitly invited to
   conversations; backup restore does not grant group access. The group owner can
   use **Conversation details → Manage group members** to verify and invite an
-  approved device. Only new messages are delivered to that device.
+  approved device. Only new messages are delivered to that device. The current
+  owner can also transfer ownership or remove a member with MLS key rotation.
 - Send messages between accounts, or create a group with the compose button.
 - Press and hold a message for about half a second to react, like iMessage.
   The popup starts with common emoji; **+** opens a searchable library of over
@@ -52,8 +60,10 @@ steps, see [login and enrollment](docs/login-and-enrollment.md).
   messages read. Already queued/sent receipts are not withdrawn by disabling it.
 - Type in one account to see a typing indicator in another. It clears on send,
   blur, or inactivity, with automatic expiry if a tab closes unexpectedly.
-- Attach a small image or file, up to **32 KiB**. Both content and file data go
-  inside MLS encryption. Large-file/S3 delivery is not implemented yet.
+- Attach an image or file, up to **25 MiB**. Files up to 32 KiB remain inside MLS;
+  larger files use client-side encryption and an immutable object store (local
+  fixtures or private S3). Only the encrypted MLS message contains the file key
+  and name. Choose Download or Preview to fetch and verify an uploaded file.
 - Open the account menu at the bottom left and choose **Go offline**. Queue a
   message, choose **Reconnect**, and watch it arrive in the other tab.
 - Search conversations/messages, open conversation details, or resize to try the
@@ -63,7 +73,8 @@ steps, see [login and enrollment](docs/login-and-enrollment.md).
 - Open **Backups** in the top bar to generate a recovery code, confirm it, and
   download an encrypted `.crkbackup` history file (up to 16 MiB). Keep the code
   separately. **Restore backup** imports a searchable, read-only archive into the
-  selected test account, including in a fresh workspace. Live conversations and
+  selected test account, including in a fresh workspace. Uploaded files retain an explicit name/size
+  omission record; their contents are excluded. Keep those files separately. Live conversations and
   keys are unchanged; this does not log in or rejoin groups. Pending messages and
   typing are excluded. Preserve original backup files; restored archives are not
   included in later exports. Automatic S3 backup is not connected.
@@ -91,6 +102,31 @@ See [ADR-0013](docs/adr/0013-approved-group-admission.md) for this retention tra
 
 The UI source is in `apps/ui/`. After source edits, restart `npm run dev` to rebuild.
 There is no Vite dev server or second port required.
+
+## Open the macOS desktop client
+
+```sh
+./scripts/start-desktop.sh
+```
+
+This builds bundled assets and opens the native client. Configure your business
+relay, sign in, and request device approval. It uses no demo accounts. Contacts,
+invitations, and owner decisions currently require explicit public-package exchange
+and fingerprint verification. See [desktop setup](docs/desktop.md) for prerequisites,
+first-device bootstrap, Keychain behavior, and limitations. No AWS resources are
+created by this launcher.
+
+## Build the iOS app
+
+```sh
+./scripts/build-ios.sh simulator
+open apps/ios/Cirra.xcodeproj
+```
+
+The iPhone/iPad app shares the Rust engine and React UI, with iOS Keychain,
+system account sign-in, and a native Files picker. It requires full Xcode and
+an iOS simulator runtime. Configure a business HTTPS relay and explicitly approve
+the device. See [iOS setup](docs/ios.md) for signing, callbacks, and limitations.
 
 ## Try it locally
 
@@ -133,6 +169,12 @@ created with restricted permissions and ignored by Git. Do not paste them into l
 - Encrypted local history with atomic inbound ratchet/history/cursor commits.
 - Owner-approved group admission with atomic MLS commit/welcome delivery, pinned
   identities, durable retries, and no automatic transfer of prior history.
+- Explicit owner transfer/removal with exact saved commits, atomic relay changes,
+  and pinned recipient authorization.
+- Encrypted 25 MiB object attachments with scoped uploads/downloads, quotas, and
+  private S3 infrastructure; local fixtures require no AWS.
+- Independent macOS Tauri client, Keychain-held vault key, native OAuth PKCE,
+  verified contact exchange, and native file save dialogs.
 - Encrypted replies and delivery/read receipts with per-device privacy controls.
 - User-held recovery codes, encrypted portable history exports, and isolated
   read-only archive restore, with wrong-key/tamper rejection and encrypted storage.
@@ -157,6 +199,10 @@ Infrastructure encryption at rest is separate from the client-side MLS encryptio
 | `croaker-client` | Transactional encrypted state and outgoing message queue |
 | `croaker-relay` | HTTP API, authorization, SQLite/DynamoDB storage, Lambda |
 | `croaker-cli` | Local server, credential provisioning, end-to-end demonstration |
+| `cirra-device` | Independent per-installation Rust client engine and verified relay transport |
+| `cirra-ios-bridge` | Narrow C ABI for the iOS native shell and shared Rust engine |
+| `apps/ios` | SwiftUI, restricted WKWebView, iOS Keychain, system sign-in, and Files export |
+| `cirra-desktop` | Bundled macOS Tauri shell and Keychain/file-dialog adapters |
 | `croaker-local` | Loopback-only UI bridge and persistent multi-account test workspace |
 | `apps/ui` | React/TypeScript interface, local launcher, Playwright browser tests |
 
@@ -176,7 +222,15 @@ terraform -chdir=infra/terraform validate
 terraform -chdir=infra/terraform test # Mock provider; creates no cloud resources.
 ```
 
+## Hosted browser client
+
+See [browser setup, storage boundaries, build and publication](docs/web.md). The
+hosted build runs the shared Rust engine through WebAssembly; it does not deploy
+the local test harness. Browser devices require their own verified enrollment.
+
 ## AWS development deployment
+
+See the [operator login, deployment runbook, and idle-cost assumptions](docs/aws-deployment.md).
 
 This deploys the prototype relay, not the complete product. Use a development
 account. Provisioning uses your operator credentials; there is no public endpoint
@@ -193,14 +247,11 @@ terraform -chdir=infra/terraform plan \
 terraform -chdir=infra/terraform apply deployment.tfplan
 ```
 
-`api_url` and `table_name` are Terraform outputs. Register fresh demo credentials:
-
-```sh
-cargo run -p croaker-cli --features aws -- provision-aws \
-  --table YOUR_TABLE_NAME --credentials data/devices.local.json
-cargo run -p croaker-cli -- demo \
-  --url YOUR_HTTPS_API_URL --credentials data/devices.local.json
-```
+`api_url` is the native client's Business relay URL; `table_name` is the operator
+provisioning target. Create invited Cognito accounts and immutable subject/tenant
+grants using [login and enrollment](docs/login-and-enrollment.md), then verify and
+explicitly approve native devices. Keep the demo credentials and local workspace
+out of the deployed installation.
 
 The same Terraform supports a hosted installation with multiple tenant IDs or a
 dedicated installation in a customer's AWS account. No central licensing service
@@ -211,15 +262,18 @@ Without `budget_email`, it records the budget but sends no email notifications.
 
 ## Next product milestones
 
-1. Deploy/acceptance-test Cognito login and verified enrollment, add enterprise
+Track actionable follow-ups in the [todo list](docs/todo.md), including simpler
+first-device onboarding and QR-based additional-device approval.
+
+1. Acceptance-test live Cognito login and verified enrollment, add enterprise
    federation, invitations/admin UI, seat limits, and account lifecycle management.
-2. Production React/Tauri clients with platform secure storage, device-specific
-   enrollment, and APNs/FCM delivery. The local browser harness already exercises
-   encrypted history and atomic inbound cursor checkpoints.
-3. General membership removal/owner transfer, encrypted media uploads, cloud
-   backup automation/account recovery, indexed history search, and disappearing
-   messages. Explicit single-device group admission, replies, and receipts work
-   in the local app; production platform integration remains pending.
+2. Signed/notarized native distribution, additional platform secure stores,
+   automated verified contact/decision transport, and APNs/FCM delivery. macOS
+   and iOS clients share isolated device stores and explicit enrollment.
+3. Cloud backup automation/account recovery, indexed history search, and
+   disappearing messages. Group admission, owner transfer/removal, encrypted
+   object media, replies, and receipts have local/native development flows; live
+   AWS/S3/Cognito acceptance remains pending.
 4. Independent security review, platform distribution, measured load/cost tests,
    operational recovery drills, and commercial release.
 

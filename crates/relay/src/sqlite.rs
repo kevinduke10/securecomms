@@ -368,6 +368,33 @@ impl Store for SqliteStore {
             Ok(membership::AcceptedAdmission{commit_sequence:current+1,welcome_sequence:current+2,duplicate:false})
         }).await
     }
+    async fn lifecycle(
+        &self,
+        actor: &Principal,
+        id: ConversationId,
+        input: croaker_protocol::lifecycle::GroupLifecycle,
+    ) -> Result<croaker_protocol::lifecycle::AcceptedLifecycle> {
+        use croaker_protocol::lifecycle::{AcceptedLifecycle, LifecycleAction};
+        input.validate().map_err(StoreError::Invalid)?;
+        let actor = actor.clone();
+        self.transaction(move |tx| {
+        active(tx,&actor)?;
+        let fingerprint=crate::lifecycle::fingerprint(&input);
+        let previous:Option<(String,String,u64)>=tx.query_row("SELECT actor,fingerprint,sequence FROM group_lifecycle WHERE tenant=?1 AND conversation=?2 AND request_id=?3",params![actor.tenant_id.to_string(),id.to_string(),input.context.request_id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|_|StoreError::Unavailable)?;
+        if let Some((owner,hash,sequence))=previous {return if owner==actor.device_id.to_string() && hash==fingerprint {Ok(AcceptedLifecycle{sequence,duplicate:true})}else{Err(StoreError::Conflict)};}
+        let (group,current)=conversation(tx,&actor,id)?;
+        let next=crate::lifecycle::validate(&actor,&group,id,&input)?;
+        if let LifecycleAction::Transfer{target}=input.context.action {
+          let available:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM devices WHERE tenant=?1 AND device=?2 AND revoked=0)",params![actor.tenant_id.to_string(),target.to_string()],|r|r.get(0)).map_err(|_|StoreError::Unavailable)?;
+          if !available {return Err(StoreError::NotFound);}
+        }
+        let timestamp=now();let stored=StoredEvent{sequence:current+1,sender:actor.device_id,submitted_at:timestamp,expires_at:timestamp+RETENTION_SECONDS,event:input.commit};
+        tx.execute("INSERT INTO events(tenant,conversation,sequence,sender,message_id,fingerprint,payload,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![actor.tenant_id.to_string(),id.to_string(),stored.sequence,actor.device_id.to_string(),stored.event.message_id.to_string(),event_hash(&stored.event),serde_json::to_string(&stored).map_err(|_|StoreError::Unavailable)?,stored.expires_at]).map_err(|e|match e {rusqlite::Error::SqliteFailure(error,_) if error.code==rusqlite::ErrorCode::ConstraintViolation=>StoreError::Conflict,_=>StoreError::Unavailable})?;
+        tx.execute("UPDATE conversations SET metadata=?3,sequence=?4 WHERE tenant=?1 AND id=?2",params![actor.tenant_id.to_string(),id.to_string(),serde_json::to_string(&next).map_err(|_|StoreError::Unavailable)?,current+1]).map_err(|_|StoreError::Unavailable)?;
+        tx.execute("INSERT INTO group_lifecycle(tenant,conversation,request_id,actor,fingerprint,sequence) VALUES(?1,?2,?3,?4,?5,?6)",params![actor.tenant_id.to_string(),id.to_string(),input.context.request_id.to_string(),actor.device_id.to_string(),fingerprint,current+1]).map_err(|_|StoreError::Unavailable)?;
+        Ok(AcceptedLifecycle{sequence:current+1,duplicate:false})
+      }).await
+    }
     async fn append(
         &self,
         actor: &Principal,
