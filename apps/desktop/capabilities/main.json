@@ -1,0 +1,14 @@
+{
+  "identifier": "main",
+  "description": "Bundled Cirra UI may call only the device client, login, platform information, and an explicit native save panel.",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "allow-client-request",
+    "allow-desktop-info",
+    "allow-open-login",
+    "allow-save-download"
+  ]
+}

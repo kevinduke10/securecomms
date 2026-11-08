@@ -47,5 +47,12 @@ test('delivery is separate from opt-in read receipts and hidden conversations ar
   await page.waitForTimeout(1800);await expect(behindModal.locator('.receipt-status')).not.toContainText('Read');
   await bob.getByRole('button',{name:'Close dialog',exact:true}).click();
   await expect(behindModal.locator('.receipt-status')).toContainText('Read on 1 device');
+  await bob.evaluate(()=>{window.__CIRRA_IOS_ACTIVE__=false;window.dispatchEvent(new Event('cirra-native-visibility'));});
+  await page.bringToFront();await page.getByRole('textbox',{name:'Message',exact:true}).fill('Native picker obscures receipt test 94182');await page.getByRole('button',{name:'Send message',exact:true}).click();
+  const nativeHidden=page.getByRole('article').filter({hasText:'Native picker obscures receipt test 94182'});
+  await bob.bringToFront();await expect(nativeHidden.locator('.receipt-status')).toContainText('Delivered to 1 device');
+  await page.waitForTimeout(1800);await expect(nativeHidden.locator('.receipt-status')).not.toContainText('Read');
+  await bob.evaluate(()=>{window.__CIRRA_IOS_ACTIVE__=true;window.dispatchEvent(new Event('cirra-native-visibility'));});
+  await expect(nativeHidden.locator('.receipt-status')).toContainText('Read on 1 device');
   await bob.getByRole('button',{name:'Choose test account',exact:true}).click();await setting.click();await expect(setting).not.toBeChecked();await bob.close();
 });

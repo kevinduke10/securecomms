@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/protocol", "crates/crypto", "crates/client", "crates/relay", "crates/cli", "crates/local"]
+members = ["crates/protocol", "crates/crypto", "crates/client", "crates/relay", "crates/cli", "crates/local", "crates/device", "apps/desktop", "crates/ios-bridge"]
 resolver = "3"
 
 [workspace.package]

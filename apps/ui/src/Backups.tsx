@@ -1,19 +1,16 @@
+import { clientFetch, saveBlob, isNative } from './transport';
 import { useEffect, useState } from 'react';
 import { ArrowLeft, Download, FileKey2, ShieldCheck, Trash2, Upload } from 'lucide-react';
 
 type Summary = { id: string; created_at: number; owner: string; conversations: number; messages: number };
 type Attachment = { name: string; mime: string; data: string; size: number };
-type Archive = { id: string; created_at: number; source_device: string; people: { device_id: string; name: string }[]; conversations: { id: string; title: string; messages: { id: string; sender: string; sent_at: number; text: string; reply_to?: { message_id: string; sender: string } | null; attachment: Attachment | null; reactions: { sender: string; emoji: string }[] }[] }[] };
+type Archive = { id: string; created_at: number; source_device: string; people: { device_id: string; name: string }[]; conversations: { id: string; title: string; messages: { id: string; sender: string; sent_at: number; text: string; reply_to?: { message_id: string; sender: string } | null; attachment: Attachment | null; media_omitted?:{name:string;mime:string;size:number}|null; reactions: { sender: string; emoji: string }[] }[] }[] };
 const maxFile = 16 * 1024 * 1024 + 256;
 async function request(profile: string, path: string, body?: unknown) {
-  const response = await fetch(`/local-api/${profile}/backups${path}`, { method: body === undefined ? 'GET' : 'POST', cache: 'no-store', headers: { 'x-croaker-local': '1', ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
+  const response = await clientFetch(`/local-api/${profile}/backups${path}`, { method: body === undefined ? 'GET' : 'POST', cache: 'no-store', headers: { 'x-croaker-local': '1', ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
   if (response.status === 401) window.dispatchEvent(new Event('croaker-signin-required'));
   if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.error || 'The backup operation failed. Please try again.'); }
   return response;
-}
-function save(blob: Blob, name: string) {
-  const url = URL.createObjectURL(blob); const link = document.createElement('a');
-  link.href = url; link.download = name; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 async function encodeFile(file: File) {
   const bytes = new Uint8Array(await file.arrayBuffer()); let value = '';
@@ -44,13 +41,13 @@ export default function Backups({ profile }: { profile: string }) {
     <p className="modal-intro">Back up saved history with a recovery code only you hold. Keep the file and code separately. Neither can be replaced if lost.</p>
     <div className="segmented" role="group" aria-label="Backup actions">{(['export', 'restore', 'archives'] as const).map(value => <button type="button" key={value} disabled={busy} className={tab === value ? 'selected' : ''} aria-pressed={tab === value} onClick={() => { setTab(value); setArchive(null); setError(''); setStatus(''); }}>{value === 'export' ? 'Create backup' : value === 'restore' ? 'Restore backup' : `Archives (${archives.length})`}</button>)}</div>
     {tab === 'export' && <section aria-label="Create encrypted backup">
-      <div className="backup-explanation"><ShieldCheck size={20} /><p>Messages, attachments, and reactions are included. Unsent messages, typing, and live messaging keys are excluded. Maximum archive size: 16 MiB.</p></div>
+      <div className="backup-explanation"><ShieldCheck size={20} /><p>Messages, small attachments, and reactions are included. Larger uploaded files are recorded by name and size; their contents are not included. Unsent messages, typing, and live messaging keys are excluded. Maximum archive size: 16 MiB.</p></div>
       {!code ? <button type="button" className="primary-button" disabled={busy} onClick={() => void run(async () => { const result = await (await request(profile, '/code', {})).json(); setCode(result.recovery_code); setSaved(false); setConfirmation(''); })}><FileKey2 size={16} />Generate recovery code</button> : <>
         <label className="field-label">Your recovery code<textarea className="recovery-code" aria-label="Your recovery code" readOnly value={code} spellCheck={false} autoComplete="off" /></label>
         <p className="backup-hint">Save this code in a password manager or on paper. It disappears from this dialog when you close it. It unlocks any backup made with it.</p>
         <label className="backup-check"><input type="checkbox" checked={saved} onChange={e => setSaved(e.target.checked)} />I saved my recovery code somewhere safe.</label>
         <label className="field-label">Enter the saved code again<input type="password" autoComplete="off" spellCheck={false} value={confirmation} onChange={e => setConfirmation(e.target.value)} /></label>
-        <button type="button" className="primary-button" disabled={busy || !saved || confirmation.trim().toUpperCase() !== code.toUpperCase()} onClick={() => void run(async () => { const response = await request(profile, '/export', { recovery_code: code, confirmation }); save(await response.blob(), 'cirra-history.crkbackup'); setStatus('Encrypted backup downloaded. Keep your recovery code separately.'); })}><Download size={16} />Download encrypted backup</button>
+        <button type="button" className="primary-button" disabled={busy || !saved || confirmation.trim().toUpperCase() !== code.toUpperCase()} onClick={() => void run(async () => { const response = await request(profile, '/export', { recovery_code: code, confirmation }); const saved = await saveBlob(await response.blob(), 'cirra-history.crkbackup'); setStatus(saved ? 'Encrypted backup downloaded. Keep your recovery code separately.' : 'Save canceled.'); })}><Download size={16} />Download encrypted backup</button>
       </>}
     </section>}
     {tab === 'restore' && <form onSubmit={e => { e.preventDefault(); if (!file || !restoreCode || busy) return; void run(async () => {
@@ -71,13 +68,13 @@ export default function Backups({ profile }: { profile: string }) {
         <label className="field-label">Search recovered history<input type="search" value={search} onChange={e => setSearch(e.target.value)} /></label>
         <div className="archive-history">{archive.conversations.map(chat => {
           const messages = chat.messages.filter(message => `${message.text} ${message.attachment?.name || ''} ${chat.title}`.toLowerCase().includes(search.toLowerCase()));
-          return messages.length ? <section key={chat.id}><h3>{chat.title}</h3>{messages.map(message => <article className="archive-message" key={`${message.sender}:${message.id}`}><header><strong>{name(message.sender)}</strong><time>{date(message.sent_at)}</time></header>{quote(chat,message)}<p>{message.text}</p>{message.attachment && <a className="file-card" href={`data:application/octet-stream;base64,${message.attachment.data}`} download={message.attachment.name}><Download size={16} />{message.attachment.name}</a>}{message.reactions.length > 0 && <p className="archive-reactions">{message.reactions.map(reaction => <span key={reaction.sender} title={name(reaction.sender)}>{reaction.emoji}</span>)}</p>}</article>)}</section> : null;
+          return messages.length ? <section key={chat.id}><h3>{chat.title}</h3>{messages.map(message => <article className="archive-message" key={`${message.sender}:${message.id}`}><header><strong>{name(message.sender)}</strong><time>{date(message.sent_at)}</time></header>{quote(chat,message)}<p>{message.text}</p>{message.attachment && <a className="file-card" href={`data:application/octet-stream;base64,${message.attachment.data}`} download={message.attachment.name} onClick={e=>{if(isNative()){e.preventDefault();const file=message.attachment!;void run(async()=>{await saveBlob(new Blob([Uint8Array.from(atob(file.data),c=>c.charCodeAt(0))]),file.name);});}}}><Download size={16} />{message.attachment.name}</a>}{message.media_omitted && <p className="backup-hint">{message.media_omitted.name} · File contents were not included in this backup.</p>}{message.reactions.length > 0 && <p className="archive-reactions">{message.reactions.map(reaction => <span key={reaction.sender} title={name(reaction.sender)}>{reaction.emoji}</span>)}</p>}</article>)}</section> : null;
         })}{!archive.conversations.some(chat => chat.messages.some(message => `${message.text} ${message.attachment?.name || ''} ${chat.title}`.toLowerCase().includes(search.toLowerCase()))) && <p className="backup-hint">No matching saved messages.</p>}</div>
       </> : archives.length ? <div className="archive-list">{archives.map(item => <div className="archive-item" key={item.id}><button type="button" disabled={busy} onClick={() => void run(async () => { setArchive(await (await request(profile, `/archives/${item.id}`)).json()); setSearch(''); })}><strong>{item.owner}</strong><span>{date(item.created_at)}</span><small>{item.conversations} conversations · {item.messages} messages</small></button><button type="button" className="icon-button" aria-label={`Remove local archive for ${item.owner}`} disabled={busy} onClick={() => void run(async () => { await request(profile, `/archives/${item.id}/remove`, {}); await loadArchives(); setStatus('Local archive removed. Your exported backup file is unchanged.'); })}><Trash2 size={16} /></button></div>)}</div> : <p className="backup-hint">No restored archives yet. Choose Restore backup to open a saved file.</p>}
     </section>}
     {busy && <p className="backup-hint" role="status">Processing backup…</p>}
     {error && <p className="form-error" role="alert">{error}</p>}
     {status && <p className="backup-status" role="status">{status}</p>}
-    <p className="backup-footer">Development workspace: this Mac holds all test-account keys. Backups are files you manage. Cloud backups and production device sign-in are not available.</p>
+    <p className="backup-footer">Backups are files you manage. Store file contents separately for uploaded attachments. Automatic cloud backups are not connected.</p>
   </div>;
 }

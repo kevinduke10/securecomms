@@ -30,6 +30,8 @@ pub mod auth;
 mod backups;
 mod enrollment;
 mod events;
+mod lifecycle;
+mod media;
 mod membership;
 use events::{
     ChatEvent, MessageRef, REACTION_EMOJIS, Reaction, ReactionKind, Receipt, ReceiptKind,
@@ -70,57 +72,8 @@ struct Manifest {
     read_receipts: HashMap<String, bool>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Attachment {
-    pub name: String,
-    pub mime: String,
-    pub data: String,
-    pub size: usize,
-}
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Content {
-    pub version: u16,
-    pub text: String,
-    pub attachment: Option<Attachment>,
-}
-
-impl Content {
-    fn validate(&self) -> Result<()> {
-        ensure!(
-            self.version == 1 && self.text.len() <= 8_000,
-            "Messages can contain up to 8,000 bytes of text."
-        );
-        ensure!(
-            !self.text.trim().is_empty() || self.attachment.is_some(),
-            "Write a message or choose a file."
-        );
-        if let Some(file) = &self.attachment {
-            ensure!(
-                !file.name.is_empty()
-                    && file.name.len() <= 180
-                    && !file
-                        .name
-                        .chars()
-                        .any(|c| c.is_control() || c == '/' || c == '\\'),
-                "Choose a file with a valid name."
-            );
-            ensure!(
-                file.mime.len() <= 100 && file.data.len() <= MAX_ATTACHMENT.div_ceil(3) * 4,
-                "Local demo attachments must be 32 KB or smaller."
-            );
-            let bytes = BASE64_STANDARD
-                .decode(&file.data)
-                .context("Invalid attachment encoding.")?;
-            ensure!(
-                bytes.len() == file.size && bytes.len() <= MAX_ATTACHMENT,
-                "Local demo attachments must be 32 KB or smaller."
-            );
-        }
-        Ok(())
-    }
-}
+pub use croaker_client::application::{Attachment, Content};
+pub use media::MediaFile;
 
 pub struct Workspace {
     directory: PathBuf,
@@ -361,6 +314,7 @@ impl Workspace {
             return Ok(());
         }
         self.flush_group_admissions(alias).await?;
+        self.flush_group_lifecycles(alias).await?;
         let profile = self.profile(alias)?;
         loop {
             let pending = self.clients[alias].pending()?;
@@ -395,11 +349,15 @@ impl Workspace {
             .collect();
         let actor = self.relay.authenticate(&profile.token).await?;
         for chat in chats {
-            let peers: Vec<_> = chat
-                .members
+            // A delayed Welcome can contain a subsequently removed member. Its
+            // identity remains pinned locally even though it has no relay access.
+            let peers: Vec<_> = self
+                .manifest
+                .profiles
                 .iter()
-                .map(|a| self.profile(a).map(|p| p.binding))
-                .collect::<Result<_>>()?;
+                .filter(|p| p.principal.tenant_id == profile.principal.tenant_id)
+                .map(|p| p.binding.clone())
+                .collect();
             loop {
                 let cursor = self.clients[alias].cursor(chat.id)?;
                 let page = self
@@ -407,17 +365,19 @@ impl Workspace {
                     .sync(&actor, chat.id, cursor, MAX_SYNC_PAGE)
                     .await?;
                 let approvals = self.approved_group_additions(chat.id)?;
+                let lifecycles = self.approved_group_lifecycles(chat.id)?;
                 let result = self
                     .clients
                     .get_mut(alias)
                     .unwrap()
-                    .apply_page_with_membership_report(
+                    .apply_page_with_lifecycle_report(
                         chat.id,
                         cursor,
                         &page,
                         &peers,
                         events::is_transient,
                         &approvals,
+                        &lifecycles,
                     )?;
                 for signal in result.transient {
                     if let Ok(ChatEvent::Typing(event)) =
@@ -886,7 +846,7 @@ impl Workspace {
                         .unwrap_or(usize::MAX)
                 });
                 let reactions: Vec<_> = grouped.into_iter().map(|(emoji,(users,pending))|serde_json::json!({"emoji":emoji,"users":users,"pending":pending})).collect();
-                messages.push(serde_json::json!({"id":message.message_id,"sender":sender.alias,"sent_at":message.sent_at,"text":content.text,"attachment":content.attachment,"pending":message.pending,"reactions":reactions,"reply_to":reply_to,"receipts":receipts,"read_by_me":read_by_me}));
+                messages.push(serde_json::json!({"id":message.message_id,"sender":sender.alias,"sent_at":message.sent_at,"text":content.text,"attachment":content.attachment,"media":projected.media.as_ref().map(|m|m.summary()),"pending":message.pending,"reactions":reactions,"reply_to":reply_to,"receipts":receipts,"read_by_me":read_by_me}));
             }
             let title = if chat.kind == "direct" {
                 self.profile(chat.members.iter().find(|m| m.as_str() != alias).unwrap())?
@@ -913,7 +873,7 @@ impl Workspace {
             chats.push(serde_json::json!({"id":chat.id,"title":title,"kind":chat.kind,"members":chat.members,"owner":chat.owner,"messages":messages,"typing":typing,"unavailable_messages":self.clients[alias].stale_application_count(chat.id)?}));
         }
         Ok(
-            serde_json::json!({"test_mode":true,"current_profile":current.alias,"profiles":profiles,"conversations":chats,"online":self.online[alias],"attachment_limit":MAX_ATTACHMENT,"reaction_options":REACTION_EMOJIS,"read_receipts":self.manifest.read_receipts.get(alias).copied().unwrap_or(false)}),
+            serde_json::json!({"test_mode":true,"current_profile":current.alias,"profiles":profiles,"conversations":chats,"online":self.online[alias],"attachment_limit":croaker_protocol::media::MAX_MEDIA_BYTES,"reaction_options":REACTION_EMOJIS,"read_receipts":self.manifest.read_receipts.get(alias).copied().unwrap_or(false)}),
         )
     }
 }
@@ -1159,7 +1119,9 @@ pub fn router_with_auth(
     let api = Router::new().route("/state",get(snapshot)).route("/{profile}/send",post(send)).route("/{profile}/conversations",post(create)).route("/{profile}/online",post(online)).route("/{profile}/reactions",post(react)).route("/{profile}/typing",post(typing)).route("/{profile}/read",post(read_messages)).route("/{profile}/receipts/settings",post(receipt_settings))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .merge(backups::routes())
+        .merge(media::routes())
         .merge(membership::routes())
+        .merge(lifecycle::routes())
         .layer(middleware::from_fn(move |request:axum::extract::Request,next:Next| {let auth=session_guard.clone();async move {auth.guard(request,next).await}}))
         .layer(middleware::from_fn(move |request: axum::extract::Request,next: Next| {
             let hosts = hosts.clone();

@@ -1,0 +1,5 @@
+# Per-developer Xcode state and local build products are never shared.
+build/
+**/xcuserdata/
+*.xcuserstate
+*.xcscmblueprint

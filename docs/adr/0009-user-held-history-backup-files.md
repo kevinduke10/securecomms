@@ -123,3 +123,5 @@ their original encrypted files. No independent security audit is claimed.
   and local archive removal. Production S3 integration is unimplemented. [ADR-0010](0010-account-login-and-replacement-device-enrollment.md)
 adds the login/enrollment backend and local approval flow; isolated production
 clients and deployment acceptance remain pending.
+
+Subsequent [ADR-0017](0017-client-encrypted-object-attachments.md) adds uploaded media. These files are excluded from the 16 MiB portable archive; exports retain explicit omitted-file metadata without object locators or keys. Native export/import adapters follow [ADR-0015](0015-independent-desktop-client.md) and [ADR-0018](0018-ios-client-and-native-platform-bridge.md).

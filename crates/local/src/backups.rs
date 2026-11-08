@@ -13,7 +13,7 @@ impl Workspace {
             if !chat.members.iter().any(|m| m == alias) {
                 continue;
             }
-            let members = chat
+            let mut members = chat
                 .members
                 .iter()
                 .map(|alias| self.profile(alias).map(|p| p.principal.device_id))
@@ -39,6 +39,11 @@ impl Workspace {
                     sender: message.sender,
                     sent_at: message.sent_at,
                     text: content.text,
+                    media_omitted: projected.media.map(|media| backup::OmittedMedia {
+                        name: media.name,
+                        mime: media.mime,
+                        size: media.size,
+                    }),
                     attachment: content.attachment.map(|f| backup::Attachment {
                         name: f.name,
                         mime: f.mime,
@@ -52,6 +57,17 @@ impl Workspace {
                         .collect(),
                 });
             }
+            // Backup participants describe historical authors, not present access.
+            for message in &messages {
+                members.push(message.sender);
+                members.extend(message.reactions.iter().map(|r| r.sender));
+                if let Some(reply) = &message.reply_to {
+                    members.push(reply.sender);
+                }
+            }
+            members.sort();
+            members.dedup();
+            used.extend(members.iter().copied());
             let title = if chat.kind == "direct" {
                 self.profile(
                     chat.members
@@ -107,7 +123,11 @@ impl Workspace {
             for message in &chat.messages {
                 Content {
                     version: 1,
-                    text: message.text.clone(),
+                    text: if message.media_omitted.is_some() && message.text.trim().is_empty() {
+                        "Attachment omitted".into()
+                    } else {
+                        message.text.clone()
+                    },
                     attachment: message.attachment.clone().map(|f| Attachment {
                         name: f.name,
                         mime: f.mime,

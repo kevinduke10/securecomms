@@ -5,13 +5,14 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 croaker-protocol.workspace = true
 croaker-crypto.workspace = true
 base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "=0.40.1", features = ["bundled", "serialize", "fallible_uint"] }
 zeroize = "1"
 rand = "0.8"
 hex.workspace = true
@@ -20,3 +21,6 @@ hkdf = "0.12"
 
 [dev-dependencies]
 tempfile = "3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"

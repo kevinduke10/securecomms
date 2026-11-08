@@ -156,7 +156,12 @@ async fn main() -> Result<()> {
             let store = database(&path)?;
             let listener = tokio::net::TcpListener::bind(bind).await?;
             println!("Cirra local relay: http://{}", listener.local_addr()?);
-            axum_serve(listener, Arc::new(store)).await?;
+            axum_serve(
+                listener,
+                Arc::new(store),
+                Some(path.with_extension("media")),
+            )
+            .await?;
         }
         Command::InitDemo { output } => {
             private_parent(&output)?;
@@ -237,7 +242,7 @@ async fn main() -> Result<()> {
                 provision(store.as_ref(), &devices).await?;
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
                 let url = format!("http://{}", listener.local_addr()?);
-                let server = tokio::spawn(axum_serve(listener, store));
+                let server = tokio::spawn(axum_serve(listener, store, None));
                 let result = demo(&url, devices).await;
                 server.abort();
                 result?;
@@ -265,7 +270,25 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn axum_serve(listener: tokio::net::TcpListener, store: Arc<dyn Store>) -> Result<()> {
+async fn axum_serve(
+    listener: tokio::net::TcpListener,
+    store: Arc<dyn Store>,
+    media_dir: Option<PathBuf>,
+) -> Result<()> {
+    let media = if let Some(dir) = media_dir {
+        let registry = dir.join("registry.sqlite");
+        private_parent(&registry)?;
+        Some(Arc::new(croaker_relay::media::ObjectService {
+            relay: store.clone(),
+            registry: Arc::new(croaker_relay::media::local::SqliteRegistry::open(registry)?),
+            objects: Arc::new(croaker_relay::media::local::Files::open(
+                dir.join("objects"),
+                format!("http://{}", listener.local_addr()?),
+            )?),
+        }))
+    } else {
+        None
+    };
     let router = if std::env::var_os("CROAKER_COGNITO_ISSUER").is_some() {
         api::router_with_login(
             store,
@@ -275,6 +298,13 @@ async fn axum_serve(listener: tokio::net::TcpListener, store: Arc<dyn Store>) ->
         )
     } else {
         api::router(store)
+    };
+    let router = if let Some(media) = media {
+        router
+            .merge(croaker_relay::media::router(media.clone()))
+            .merge(croaker_relay::media::local_content_router(media))
+    } else {
+        router
     };
     croaker_relay::serve(listener, router).await?;
     Ok(())

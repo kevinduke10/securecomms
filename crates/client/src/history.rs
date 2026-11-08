@@ -19,6 +19,18 @@ pub struct TransientMessage {
     pub message: HistoryMessage,
 }
 
+/// Trusted local join intent, independent of relay metadata.
+pub struct WelcomeAuthorization<'a> {
+    pub authority: &'a DeviceBinding,
+    pub members: &'a [DeviceId],
+}
+#[derive(Default)]
+pub struct ReceivePolicy<'a> {
+    pub additions: &'a [crate::membership::ApprovedAddition],
+    pub lifecycles: &'a [crate::lifecycle::ApprovedLifecycle],
+    pub welcome: Option<WelcomeAuthorization<'a>>,
+}
+
 pub struct AppliedPage {
     pub transient: Vec<TransientMessage>,
     pub skipped_stale_applications: usize,
@@ -151,6 +163,54 @@ impl ClientStore {
         is_transient: fn(&[u8]) -> bool,
         approvals: &[crate::membership::ApprovedAddition],
     ) -> Result<AppliedPage> {
+        self.apply_page_with_lifecycle_report(
+            conversation,
+            expected_cursor,
+            page,
+            peers,
+            is_transient,
+            approvals,
+            &[],
+        )
+    }
+    // Keep the existing receive API while adding separately pinned lifecycle decisions.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_page_with_lifecycle_report(
+        &mut self,
+        conversation: ConversationId,
+        expected_cursor: u64,
+        page: &SyncPage,
+        peers: &[DeviceBinding],
+        is_transient: fn(&[u8]) -> bool,
+        approvals: &[crate::membership::ApprovedAddition],
+        lifecycles: &[crate::lifecycle::ApprovedLifecycle],
+    ) -> Result<AppliedPage> {
+        self.apply_page_with_policy_report(
+            conversation,
+            expected_cursor,
+            page,
+            peers,
+            is_transient,
+            ReceivePolicy {
+                additions: approvals,
+                lifecycles,
+                welcome: None,
+            },
+        )
+    }
+
+    /// Commit authorization checks, MLS state, local history and cursor together.
+    pub fn apply_page_with_policy_report(
+        &mut self,
+        conversation: ConversationId,
+        expected_cursor: u64,
+        page: &SyncPage,
+        peers: &[DeviceBinding],
+        is_transient: fn(&[u8]) -> bool,
+        policy: ReceivePolicy<'_>,
+    ) -> Result<AppliedPage> {
+        let approvals = policy.additions;
+        let lifecycles = policy.lifecycles;
         if page.events.is_empty()
             && page.next_cursor == expected_cursor
             && self.cursor(conversation)? == expected_cursor
@@ -173,7 +233,12 @@ impl ClientStore {
                 let bytes = BASE64_STANDARD.decode(&stored.event.ciphertext).map_err(|_| ClientError::Storage)?;
                 match stored.event.kind {
                     EventKind::Welcome => {
-                        device.join(conversation, &bytes, peers)?;
+                        if let Some(authorization)=&policy.welcome {
+                            if stored.sender!=authorization.authority.device_id {return Err(CryptoError::IdentityMismatch.into());}
+                            device.join_authorized(conversation,&bytes,peers,authorization.authority,authorization.members)?;
+                        } else {
+                            device.join(conversation, &bytes, peers)?;
+                        }
                         tx.execute("INSERT INTO group_join_epochs(conversation,epoch) VALUES(?1,?2)",params![conversation.to_string(),device.conversation_epoch(conversation)?]).map_err(|_|ClientError::Storage)?;
                     },
                     EventKind::Application => {
@@ -188,9 +253,15 @@ impl ClientStore {
                         else { save(tx, &message, &key)?; }
                     }
                     EventKind::Commit => {
-                        let approval=approvals.iter().find(|approval|approval.commit_id==stored.event.message_id).ok_or(CryptoError::Mls("membership changes require explicit approval"))?;
-                        if stored.sender!=approval.authority.device_id {return Err(CryptoError::IdentityMismatch.into());}
-                        device.apply_addition(conversation,&bytes,&approval.authority,&approval.added)?;
+                        if let Some(approval)=lifecycles.iter().find(|approval|approval.context.request_id==stored.event.message_id) {
+                            if stored.sender!=approval.authority.device_id || approval.context.conversation_id!=conversation {return Err(CryptoError::IdentityMismatch.into());}
+                            device.apply_lifecycle(&approval.context,&bytes,&approval.authority,&approval.target)?;
+                        } else {
+                            let approval=approvals.iter().find(|approval|approval.commit_id==stored.event.message_id).ok_or(CryptoError::Mls("membership changes require explicit approval"))?;
+                            if stored.sender!=approval.authority.device_id {return Err(CryptoError::IdentityMismatch.into());}
+                            device.apply_addition(conversation,&bytes,&approval.authority,&approval.added)?;
+                        }
+                        tx.execute("INSERT OR IGNORE INTO applied_group_commits_v1(conversation,message_id) VALUES(?1,?2)",params![conversation.to_string(),stored.event.message_id.to_string()]).map_err(|_|ClientError::Storage)?;
                     },
                 }
             }
@@ -260,7 +331,7 @@ impl ClientStore {
             let ciphertext = device.encrypt(conversation, plaintext)?;
             let pending = PendingEvent { conversation_id: conversation, event: SubmitEvent { protocol_version: API_VERSION, message_id: id, kind: EventKind::Application, recipient: None, ciphertext: BASE64_STANDARD.encode(ciphertext) } };
             tx.execute("INSERT INTO outbox(message_id,envelope) VALUES(?1,?2)", params![id.to_string(), serde_json::to_string(&pending).map_err(|_| ClientError::Storage)?]).map_err(|_| ClientError::Storage)?;
-            save(tx, &HistoryMessage { message_id: id, conversation_id: conversation, sender, sent_at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_| ClientError::Storage)?.as_secs(), plaintext: plaintext.to_vec(), outgoing: true, pending: true }, &key)?;
+            save(tx, &HistoryMessage { message_id: id, conversation_id: conversation, sender, sent_at: crate::clock_seconds()?, plaintext: plaintext.to_vec(), outgoing: true, pending: true }, &key)?;
             Ok(true)
         })
     }

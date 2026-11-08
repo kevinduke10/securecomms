@@ -110,6 +110,14 @@ pub struct MessageRef {
     pub message_id: MessageId,
     pub sender: DeviceId,
 }
+/// History-only summary. No object locator, encryption key, or download authority.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OmittedMedia {
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Message {
@@ -118,6 +126,8 @@ pub struct Message {
     pub sent_at: u64,
     pub text: String,
     pub attachment: Option<Attachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_omitted: Option<OmittedMedia>,
     pub reactions: Vec<Reaction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<MessageRef>,
@@ -190,7 +200,10 @@ impl Archive {
                     || message.sent_at > 253_402_300_799
                     || message.text.len() > 8000
                     || message.reactions.len() > members.len()
-                    || (message.text.trim().is_empty() && message.attachment.is_none())
+                    || (message.text.trim().is_empty()
+                        && message.attachment.is_none()
+                        && message.media_omitted.is_none())
+                    || (message.attachment.is_some() && message.media_omitted.is_some())
                 {
                     return Err(invalid());
                 }
@@ -203,6 +216,19 @@ impl Archive {
                     {
                         return Err(invalid());
                     }
+                }
+                if let Some(media) = &message.media_omitted
+                    && (media.name.is_empty()
+                        || media.name.len() > 180
+                        || media
+                            .name
+                            .chars()
+                            .any(|c| c.is_control() || c == '/' || c == '\\')
+                        || media.mime.len() > 100
+                        || media.mime.chars().any(char::is_control)
+                        || media.size > croaker_protocol::media::MAX_MEDIA_BYTES as u64)
+                {
+                    return Err(invalid());
                 }
                 if let Some(file) = &message.attachment
                     && (file.name.is_empty()

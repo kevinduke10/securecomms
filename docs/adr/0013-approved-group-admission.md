@@ -160,3 +160,5 @@ Validation completed on 2026-11-08: workspace Rust tests, the DynamoDB Local
 event/enrollment/admission contracts, Clippy, and the authenticated browser group
 admission test pass. The relay's normal dependency graph still excludes the client
 and MLS crypto crates. This does not validate a live AWS deployment.
+
+Subsequent [ADR-0016](0016-group-owner-transfer-and-removal.md) adds exact owner transfer/removal and native manual decision transport. Native initial joins additionally require the authenticated Welcome author and exact roster to match the verified invitation, following [ADR-0015](0015-independent-desktop-client.md).

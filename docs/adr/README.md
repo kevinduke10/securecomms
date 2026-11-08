@@ -27,6 +27,15 @@ reactions or typing indicators. Read ADR-0008 before changing appearance themes,
 | [0012](0012-functional-interface-copy.md) | Direct functional UI copy without taglines or slogans | Accepted | Implemented local UI |
 | [0013](0013-approved-group-admission.md) | Explicit pinned group admission and atomic MLS commit/welcome delivery | Accepted | Implemented local/client/relay workflow |
 | [0014](0014-encrypted-replies-and-receipts.md) | Authenticated replies and encrypted delivery/read receipt state | Accepted | Implemented local app/core flow |
+| [0015](0015-independent-desktop-client.md) | Independent macOS Rust/Tauri client, Keychain, and guarded native transport | Accepted | Development client implemented; live deployment/distribution pending |
+| [0016](0016-group-owner-transfer-and-removal.md) | Explicit owner transfer and member removal with MLS key rotation | Accepted | Local/native client and SQLite/DynamoDB relay flow implemented |
+| [0017](0017-client-encrypted-object-attachments.md) | Client-encrypted object attachments and private S3 delivery | Accepted | Local/native flow and AWS infrastructure implemented; live S3 acceptance pending |
+| [0018](0018-ios-client-and-native-platform-bridge.md) | iOS native shell, device-only Keychain, and shared Rust engine | Accepted | Implemented; iOS Simulator build and native bridge tests pass |
+| [0019](0019-aws-development-deployment-preparation.md) | Browser-authenticated AWS deployment preparation and low idle-cost assumptions | Accepted | Development deployment removed; validated implementation retained |
+
+| [0020](0020-browser-client-and-web-hosting.md) | Rust/WASM browser client, encrypted IndexedDB snapshots, and private S3/CloudFront hosting | Accepted | Implemented/validated; development hosting removed |
+
+| [0021](0021-responsive-device-security-tools.md) | Responsive tabbed security tools and wrapping/copyable enrollment identifiers | Accepted | Implemented/verified; simulator updated; cloud hosting removed |
 
 “Accepted” describes a design decision, not a claim that its entire production
 implementation is finished. Delivery labels and each record's evidence make that

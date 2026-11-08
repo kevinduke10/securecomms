@@ -555,6 +555,109 @@ impl Store for DynamoStore {
         }
         Err(StoreError::Conflict)
     }
+    async fn lifecycle(
+        &self,
+        actor: &Principal,
+        id: ConversationId,
+        input: croaker_protocol::lifecycle::GroupLifecycle,
+    ) -> Result<croaker_protocol::lifecycle::AcceptedLifecycle> {
+        use croaker_protocol::lifecycle::{AcceptedLifecycle, LifecycleAction};
+        input.validate().map_err(StoreError::Invalid)?;
+        let pk = group_key(actor.tenant_id, id);
+        let receipt_key = format!("LIFECYCLE#{}", input.context.request_id);
+        let fingerprint = crate::lifecycle::fingerprint(&input);
+        for _ in 0..8 {
+            self.active(actor).await?;
+            if let Some(receipt) = self.get(&pk, &receipt_key).await? {
+                return if string(&receipt, "actor")? == actor.device_id.to_string()
+                    && string(&receipt, "fingerprint")? == fingerprint
+                {
+                    Ok(AcceptedLifecycle {
+                        sequence: number(&receipt, "sequence")?,
+                        duplicate: true,
+                    })
+                } else {
+                    Err(StoreError::Conflict)
+                };
+            }
+            let (group, current) = self.conversation(actor, id).await?;
+            let next = crate::lifecycle::validate(actor, &group, id, &input)?;
+            let update = Update::builder()
+                .table_name(&self.table)
+                .set_key(Some(key(&pk, "META")))
+                .update_expression("SET #seq = :next, metadata = :metadata")
+                .condition_expression("#seq = :previous AND metadata = :old_metadata")
+                .expression_attribute_names("#seq", "sequence")
+                .expression_attribute_values(":next", A::N((current + 1).to_string()))
+                .expression_attribute_values(":previous", A::N(current.to_string()))
+                .expression_attribute_values(":metadata", encoded(&next)?)
+                .expression_attribute_values(":old_metadata", encoded(&group)?)
+                .build()
+                .map_err(|_| StoreError::Unavailable)?;
+            let mut writes = vec![
+                self.guard(actor)?,
+                TransactWriteItem::builder().update(update).build(),
+            ];
+            if let LifecycleAction::Transfer { target } = input.context.action {
+                self.verify_devices(actor.tenant_id, &[target]).await?;
+                let guard = ConditionCheck::builder()
+                    .table_name(&self.table)
+                    .set_key(Some(key(&tenant_key(actor.tenant_id), &device_key(target))))
+                    .condition_expression("revoked = :no")
+                    .expression_attribute_values(":no", A::Bool(false))
+                    .build()
+                    .map_err(|_| StoreError::Unavailable)?;
+                writes.push(TransactWriteItem::builder().condition_check(guard).build());
+            }
+            let timestamp = now();
+            let stored = StoredEvent {
+                sequence: current + 1,
+                sender: actor.device_id,
+                submitted_at: timestamp,
+                expires_at: timestamp + RETENTION_SECONDS,
+                event: input.commit.clone(),
+            };
+            let mut item = key(&pk, &format!("EVENT#{:020}", stored.sequence));
+            item.insert("payload".into(), encoded(&stored)?);
+            item.insert("expires_at".into(), A::N(stored.expires_at.to_string()));
+            writes.push(self.put(item)?);
+            let mut receipt = key(&pk, &receipt_key);
+            receipt.insert("fingerprint".into(), A::S(fingerprint.clone()));
+            receipt.insert("actor".into(), A::S(actor.device_id.to_string()));
+            receipt.insert("sequence".into(), A::N(stored.sequence.to_string()));
+            writes.push(self.put(receipt)?);
+            let mut dedup = key(
+                &pk,
+                &format!("RECEIPT#{}#{}", actor.device_id, stored.event.message_id),
+            );
+            dedup.insert("sequence".into(), A::N(stored.sequence.to_string()));
+            dedup.insert("fingerprint".into(), A::S(event_hash(&stored.event)));
+            writes.push(self.put(dedup)?);
+            match self
+                .client
+                .transact_write_items()
+                .set_transact_items(Some(writes))
+                .send()
+                .await
+            {
+                Ok(_) => {
+                    return Ok(AcceptedLifecycle {
+                        sequence: stored.sequence,
+                        duplicate: false,
+                    });
+                }
+                Err(error)
+                    if error
+                        .as_service_error()
+                        .is_some_and(|e| e.is_transaction_canceled_exception()) =>
+                {
+                    continue;
+                }
+                Err(_) => return Err(StoreError::Unavailable),
+            }
+        }
+        Err(StoreError::Conflict)
+    }
     async fn append(
         &self,
         actor: &Principal,

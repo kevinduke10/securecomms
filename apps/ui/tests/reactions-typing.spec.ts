@@ -13,6 +13,8 @@ test('reactions add, aggregate, replace, remove, persist, and queue offline', as
   const bobMessage = bob.getByRole('article').filter({ hasText: targetText });
   await bobMessage.getByRole('button', { name: /Add 👍 reaction \(1\)/ }).click();
   await expect(aliceMessage.getByRole('button', { name: /Remove your 👍 reaction \(2\)/ })).toBeVisible();
+  // Relay receipt can reach Alice before Bob finishes his local refresh.
+  await expect(bobMessage.getByRole('button', { name: /Remove your 👍 reaction/ })).toBeEnabled();
   await bobMessage.locator('.message-bubble').click({ button: 'right' });
   await bob.getByRole('button', { name: 'React with ❤️', exact: true }).click();
   await expect(aliceMessage.getByRole('button', { name: /Add ❤️ reaction \(1\)/ })).toBeVisible();
@@ -46,6 +48,11 @@ test('typing indicators start, stop, expire, and never expose unsent text', asyn
   await bob.goto('http://127.0.0.1:3107/?as=bob');
   const editor = bob.getByRole('textbox', { name: 'Message', exact: true });
   await editor.fill('An unsent thought, only on Bob’s device.');
+  await expect(page.locator('.typing-indicator')).toHaveText('Bob is typing…');
+  await bob.evaluate(()=>{window.__CIRRA_IOS_ACTIVE__=false;window.dispatchEvent(new Event('cirra-native-visibility'));});
+  await expect(page.locator('.typing-indicator')).toBeEmpty();
+  await bob.evaluate(()=>{window.__CIRRA_IOS_ACTIVE__=true;window.dispatchEvent(new Event('cirra-native-visibility'));});
+  await editor.fill('An unsent thought, only on Bob’s device. ');
   await expect(page.locator('.typing-indicator')).toHaveText('Bob is typing…');
   await expect(page.getByText('An unsent thought, only on Bob’s device.', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('article')).toHaveCount(before);

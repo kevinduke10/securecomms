@@ -14,7 +14,7 @@ provider "aws" {
 
 variable "region" {
   type    = string
-  default = "us-east-1"
+  default = "us-east-2"
 }
 variable "deployment_name" {
   type    = string
@@ -72,10 +72,12 @@ resource "aws_dynamodb_table" "relay" {
 }
 
 resource "aws_cloudwatch_log_group" "lambda" {
+  region            = var.region
   name              = "/aws/lambda/${var.deployment_name}-relay"
   retention_in_days = 14
 }
 resource "aws_cloudwatch_log_group" "api" {
+  region            = var.region
   name              = "/croaker/${var.deployment_name}/http"
   retention_in_days = 14
 }
@@ -119,6 +121,7 @@ resource "aws_lambda_function" "relay" {
   reserved_concurrent_executions = var.reserved_concurrency
   environment { variables = {
     CROAKER_TABLE             = aws_dynamodb_table.relay.name
+    CROAKER_MEDIA_BUCKET      = aws_s3_bucket.media.id
     CROAKER_COGNITO_ISSUER    = "https://${aws_cognito_user_pool.accounts.endpoint}"
     CROAKER_COGNITO_CLIENT_ID = aws_cognito_user_pool_client.app.id
     CROAKER_COGNITO_DOMAIN    = "https://${aws_cognito_user_pool_domain.login.domain}.auth.${var.region}.amazoncognito.com"

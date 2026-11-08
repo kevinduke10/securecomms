@@ -6,7 +6,7 @@ info:
     Client-encrypted relay with Cognito account access tokens and independently
     approved device credentials. Operators grant immutable issuer/subject membership.
     Login cannot decrypt messages or join MLS groups. Enterprise federation, general
-    active-group addition, media delivery, push, and billing remain future work.
+    streaming video, push, and billing remain future work. Object media uses client encryption and short-lived S3 grants.
 security:
   - deviceBearer: []
 paths:
@@ -76,6 +76,33 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /v1/conversations/{id}/lifecycle:
+    parameters:
+      - { $ref: '#/components/parameters/ConversationId' }
+    post:
+      summary: Atomically transfer group ownership or remove one device with an owner-authenticated MLS commit
+      description: Maximum body 128 KiB with a 64 KiB decoded commit. Requires the active current owner and exact previous roster. Transfer targets must be active current members. Removal rotates MLS keys and removes relay access in the same transaction. Matching retries retain the original result after ownership changes; clients persist and resend the exact commit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GroupLifecycle' }
+      responses:
+        '200':
+          description: Saved transition or identical request retry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sequence, duplicate]
+                properties:
+                  sequence: { type: integer, minimum: 1 }
+                  duplicate: { type: boolean }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /v1/conversations/{id}/events:
     parameters:
       - { $ref: '#/components/parameters/ConversationId' }
@@ -230,6 +257,54 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /v1/conversations/{conversation}/objects/uploads:
+    parameters:
+      - { name: conversation, in: path, required: true, schema: {type: string, format: uuid} }
+    post:
+      summary: Reserve an immutable ciphertext object and request an upload grant
+      description: |
+        Current active device and conversation membership required. Body maximum 4096 bytes.
+        Relay accepts no filename, MIME type or key. Same object ID and exact metadata retry
+        is idempotent for the original uploader. Ciphertext maximum is 26214454 bytes (25 MiB
+        plus version header, nonce and authentication tag). Daily reservations are bounded
+        to 250 MiB per device and 1 GiB per tenant. Object access expires after 30 days.
+        S3 PUT grants expire in 60 seconds and sign exact size/checksum/create-only headers.
+        Upload bytes directly to the grant URL; do not send bytes through API Gateway.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ObjectUpload' }
+      responses:
+        '200':
+          description: Existing immutable object or short-lived upload grant; Cache-Control no-store
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadGrant' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/conversations/{conversation}/objects/{object}:
+    parameters:
+      - { name: conversation, in: path, required: true, schema: {type: string, format: uuid} }
+      - { name: object, in: path, required: true, schema: {type: string, format: uuid} }
+    get:
+      summary: Authorize a ciphertext download and issue a 60-second transfer grant
+      description: |
+        Membership and revocation are checked for every grant. Previously issued S3 URLs
+        remain usable until expiration. Native clients verify ciphertext length/hash and
+        AEAD before exposing plaintext. Raw keys/descriptors only travel inside MLS.
+      responses:
+        '200':
+          description: Short-lived ciphertext transfer grant; Cache-Control no-store
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaTransfer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
     accountBearer:
@@ -247,6 +322,64 @@ components:
       required: true
       schema: { type: string, format: uuid }
   schemas:
+    GroupLifecycle:
+      type: object
+      additionalProperties: false
+      required: [context, commit]
+      properties:
+        context:
+          type: object
+          additionalProperties: false
+          required: [conversation_id, request_id, expected_owner, expected_devices, action]
+          properties:
+            conversation_id: { type: string, format: uuid }
+            request_id: { type: string, format: uuid }
+            expected_owner: { type: string, format: uuid }
+            expected_devices:
+              type: array
+              minItems: 2
+              maxItems: 500
+              uniqueItems: true
+              items: { type: string, format: uuid }
+            action:
+              type: object
+              additionalProperties: false
+              required: [kind, target]
+              properties:
+                kind: { type: string, enum: [transfer, remove] }
+                target: { type: string, format: uuid }
+        commit: { $ref: '#/components/schemas/SubmitEvent' }
+
+    ObjectUpload:
+      type: object
+      additionalProperties: false
+      required: [object_id, ciphertext_size, sha256]
+      properties:
+        object_id: {type: string, format: uuid}
+        ciphertext_size: {type: integer, minimum: 54, maximum: 26214454}
+        sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+    MediaTransfer:
+      type: object
+      required: [url, headers, expires_at, requires_device_auth]
+      properties:
+        url: {type: string, format: uri}
+        headers: {type: object, additionalProperties: {type: string}}
+        expires_at: {type: integer, minimum: 0}
+        requires_device_auth:
+          type: boolean
+          description: |
+            False for S3; never attach relay credentials to that URL. True only for local
+            relay content routes, which require current device auth on every request.
+            Validate destination against the configured relay/S3 origin; never follow redirects.
+    UploadGrant:
+      type: object
+      required: [transfer, already_uploaded]
+      properties:
+        transfer:
+          oneOf:
+            - {$ref: '#/components/schemas/MediaTransfer'}
+            - {type: 'null'}
+        already_uploaded: {type: boolean}
     GroupAdmission:
       type: object
       additionalProperties: false

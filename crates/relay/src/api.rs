@@ -26,6 +26,10 @@ pub fn router(store: Backend) -> Router {
             "/v1/conversations/{id}/admissions",
             post(admit).layer(DefaultBodyLimit::max(128 * 1024)),
         )
+        .route(
+            "/v1/conversations/{id}/lifecycle",
+            post(lifecycle).layer(DefaultBodyLimit::max(128 * 1024)),
+        )
         .route("/v1/conversations/{id}/events", post(append))
         .route("/v1/conversations/{id}/sync", get(sync))
         .route("/v1/devices/{id}/revoke", post(revoke))
@@ -84,6 +88,16 @@ async fn admit(
 ) -> Result<Json<membership::AcceptedAdmission>, StoreError> {
     let actor = authenticate(&headers, &store).await?;
     Ok(Json(store.admit(&actor, id, input).await?))
+}
+
+async fn lifecycle(
+    State(store): State<Backend>,
+    headers: HeaderMap,
+    Path(id): Path<ConversationId>,
+    Json(input): Json<croaker_protocol::lifecycle::GroupLifecycle>,
+) -> Result<Json<croaker_protocol::lifecycle::AcceptedLifecycle>, StoreError> {
+    let actor = authenticate(&headers, &store).await?;
+    Ok(Json(store.lifecycle(&actor, id, input).await?))
 }
 
 async fn append(

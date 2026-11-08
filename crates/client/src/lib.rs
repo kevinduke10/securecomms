@@ -11,10 +11,13 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use zeroize::Zeroizing;
 
+pub mod application;
 pub mod backup;
 mod history;
 pub mod membership;
-pub use history::{AppliedPage, HistoryMessage, TransientMessage};
+pub use history::{
+    AppliedPage, HistoryMessage, ReceivePolicy, TransientMessage, WelcomeAuthorization,
+};
 pub use membership::{ApprovedAddition, PendingAdmission};
 
 #[derive(Debug, thiserror::Error)]
@@ -23,6 +26,10 @@ pub enum ClientError {
     Crypto(#[from] CryptoError),
     #[error("local state unavailable or invalid")]
     Storage,
+    #[error(
+        "Attachment upload history is full (1,024 requests or 512 MiB of pending uploads). Finish pending uploads or use a new device workspace."
+    )]
+    MediaCapacity,
     #[error("this device state already exists; open it instead")]
     AlreadyExists,
 }
@@ -60,6 +67,8 @@ fn connect(path: impl AsRef<Path>) -> Result<Connection> {
         CREATE TABLE IF NOT EXISTS history(position INTEGER PRIMARY KEY AUTOINCREMENT, conversation TEXT NOT NULL, sender TEXT NOT NULL, message_id TEXT NOT NULL, sealed BLOB NOT NULL, UNIQUE(conversation,sender,message_id));
         CREATE TABLE IF NOT EXISTS stale_applications(conversation TEXT PRIMARY KEY, count INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS group_join_epochs(conversation TEXT PRIMARY KEY, epoch INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS applied_group_commits_v1(conversation TEXT NOT NULL,message_id TEXT NOT NULL,PRIMARY KEY(conversation,message_id));
+        CREATE TABLE IF NOT EXISTS group_lifecycle(request_id TEXT PRIMARY KEY, conversation TEXT NOT NULL, envelope TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS group_admissions(request_id TEXT PRIMARY KEY, conversation TEXT NOT NULL, envelope TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS recovered_archives(id TEXT PRIMARY KEY, sealed BLOB NOT NULL);
         CREATE TABLE IF NOT EXISTS cursors(conversation TEXT PRIMARY KEY, cursor INTEGER NOT NULL);").map_err(|_| ClientError::Storage)?;
@@ -159,10 +168,7 @@ impl ClientStore {
                     message_id: pending.event.message_id,
                     conversation_id,
                     sender: device.binding().device_id,
-                    sent_at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_err(|_| ClientError::Storage)?
-                        .as_secs(),
+                    sent_at: clock_seconds()?,
                     plaintext: plaintext.to_vec(),
                     outgoing: true,
                     pending: true,
@@ -309,5 +315,50 @@ mod tests {
                 .windows(b"private first message".len())
                 .any(|bytes| bytes == b"private first message")
         );
+    }
+}
+
+pub mod lifecycle;
+pub mod media;
+
+fn clock_seconds() -> Result<u64> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        Ok((js_sys::Date::now() / 1000.0) as u64)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .map_err(|_| ClientError::Storage)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ClientStore {
+    pub fn browser_export(&self) -> Result<Vec<u8>> {
+        self.connection
+            .serialize("main")
+            .map(|data| data.to_vec())
+            .map_err(|_| ClientError::Storage)
+    }
+    pub fn browser_open(bytes: &[u8], key: Zeroizing<[u8; 32]>) -> Result<Self> {
+        use rusqlite::{ffi, serialize::OwnedData};
+        let mut connection = Connection::open_in_memory().map_err(|_| ClientError::Storage)?;
+        let pointer = unsafe { ffi::sqlite3_malloc64(bytes.len() as u64) as *mut u8 };
+        let pointer = std::ptr::NonNull::new(pointer).ok_or(ClientError::Storage)?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer.as_ptr(), bytes.len());
+        }
+        let data = unsafe { OwnedData::from_raw_nonnull(pointer, bytes.len()) };
+        connection
+            .deserialize("main", data, false)
+            .map_err(|_| ClientError::Storage)?;
+        let sealed: Vec<u8> = connection
+            .query_row("SELECT sealed FROM state WHERE id=1", [], |r| r.get(0))
+            .map_err(|_| ClientError::Storage)?;
+        Device::open(&sealed, &key)?;
+        Ok(Self { connection, key })
     }
 }

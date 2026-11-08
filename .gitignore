@@ -16,8 +16,16 @@
 .DS_Store
 **/test-results/
 **/test-results-auth/
+**/test-results-browser/
 **/playwright-report/
 *.tsbuildinfo
 
 # User-held encrypted history exports (never commit recovery material).
 *.crkbackup
+
+# Xcode user-specific workspace state; shared project/scheme files stay tracked.
+**/xcuserdata/
+*.xcuserstate
+
+# Generated browser Rust/WASM bindings.
+/apps/ui/src/browser/generated/

@@ -1,11 +1,13 @@
+import { clientFetch } from './transport';
 import { useEffect, useState } from 'react';
 import { Check, UserPlus } from 'lucide-react';
 import './group-members.css';
+import GroupLifecycle from './GroupLifecycle';
 
 type Member = { profile: string; name: string; label: string; fingerprint: string; owner: boolean };
 type Membership = { can_invite: boolean; members: Member[]; candidates: Member[] };
 async function request<T>(profile: string, conversation: string, body?: unknown): Promise<T> {
-  const response = await fetch(`/local-api/${encodeURIComponent(profile)}/conversations/${encodeURIComponent(conversation)}/members`, {
+  const response = await clientFetch(`/local-api/${encodeURIComponent(profile)}/conversations/${encodeURIComponent(conversation)}/members`, {
     method: body === undefined ? 'GET' : 'POST', cache: 'no-store',
     headers: { 'x-croaker-local': '1', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
     body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(30_000),
@@ -40,7 +42,7 @@ export default function GroupMembers({ profile, conversationId, onChanged }: { p
     finally { setBusy(false); }
   }
   return <section className="group-members" aria-busy={busy}>
-    <p className="modal-intro">Only the conversation owner can add a device. Verify its fingerprint before inviting it.</p>
+    <p className="modal-intro">Only the conversation owner can change group access. Verify the target device fingerprint.</p>
     <h3>Current members</h3>
     {!membership && !error && <p className="group-members-note" role="status">Loading members…</p>}
     <ul className="group-member-list">{membership?.members.map(member => <li key={member.profile}><span><strong>{member.name}</strong><small>{member.label}{member.owner ? ' · Conversation owner' : ''}</small></span><Check size={16} aria-hidden="true" /></li>)}</ul>
@@ -53,6 +55,7 @@ export default function GroupMembers({ profile, conversationId, onChanged }: { p
         <button className="primary-button" disabled={busy || !candidate || normalized !== candidate.fingerprint}><UserPlus size={15} />{busy ? 'Adding device…' : 'Add device to group'}</button>
       </>}
     </form>}
+    {membership?.can_invite && <GroupLifecycle profile={profile} conversationId={conversationId} members={membership.members} onChanged={async () => { setMembership(await request<Membership>(profile, conversationId)); await onChanged(); }} />}
     {status && <p className="backup-status" role="status">{status}</p>}{error && <p className="form-error" role="alert">{error}</p>}
     <p className="group-members-note">Enrollment and group access are separate. A history backup does not grant group access. This local test hosts all device keys on this Mac.</p>
   </section>;

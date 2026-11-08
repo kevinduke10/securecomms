@@ -1,10 +1,10 @@
 variable "login_callback_urls" {
   type        = list(string)
-  default     = ["http://localhost:3000/local-auth/callback"]
-  description = "Exact client callback URLs. Production callbacks must use HTTPS."
+  default     = ["http://localhost:3000/local-auth/callback", "http://localhost:38317/callback", "app.cirra.ios:/oauth/callback"]
+  description = "Exact client callback URLs. HTTPS callbacks or the exact registered native callbacks."
   validation {
-    condition     = length(var.login_callback_urls) > 0 && alltrue([for url in var.login_callback_urls : can(regex("^https://[^?#]+$|^http://localhost:[0-9]+/local-auth/callback$", url))])
-    error_message = "Use HTTPS callbacks, or localhost callbacks for local development."
+    condition     = length(var.login_callback_urls) > 0 && alltrue([for url in var.login_callback_urls : can(regex("^https://[^?#]+$|^http://localhost:[0-9]+/local-auth/callback$|^http://localhost:38317/callback$|^app\\.cirra\\.ios:/oauth/callback$", url))])
+    error_message = "Use HTTPS callbacks, localhost development callbacks, or the exact Cirra iOS callback."
   }
 }
 variable "login_logout_urls" {
@@ -56,8 +56,8 @@ resource "aws_cognito_user_pool_client" "app" {
   allowed_oauth_flows                  = ["code"]
   allowed_oauth_scopes                 = ["openid", "croaker/access"]
   supported_identity_providers         = ["COGNITO"]
-  callback_urls                        = var.login_callback_urls
-  logout_urls                          = var.login_logout_urls
+  callback_urls                        = concat(var.login_callback_urls, var.enable_web_ui ? ["https://${aws_cloudfront_distribution.web[0].domain_name}/auth/callback"] : [])
+  logout_urls                          = concat(var.login_logout_urls, var.enable_web_ui ? ["https://${aws_cloudfront_distribution.web[0].domain_name}"] : [])
   access_token_validity                = 5
   id_token_validity                    = 5
   refresh_token_validity               = 1

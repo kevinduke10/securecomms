@@ -55,3 +55,5 @@ replay/removal tests, and [security boundaries](../architecture.md). [ADR-0010](
 login and approved fresh-device enrollment. Production native key verification,
 enterprise federation, deployment acceptance, and complete membership workflows
 remain incomplete.
+
+Subsequent [ADR-0015](0015-independent-desktop-client.md) and [ADR-0018](0018-ios-client-and-native-platform-bridge.md) implement independent native device stores and strict verified Welcome joining; [ADR-0016](0016-group-owner-transfer-and-removal.md) implements owner transfer/removal. Live deployment, federation, and independent security review remain separate work.
