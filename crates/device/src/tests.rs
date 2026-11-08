@@ -426,3 +426,16 @@ async fn explicit_sign_out_remains_locked_after_restart() {
         "Sign-out locks history, preserving the approved device identity."
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_requests_can_run_on_a_multithreaded_executor() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut runtime =
+        DeviceRuntime::open(directory.path().into(), Arc::new(MemorySecrets::default())).unwrap();
+    let response =
+        tokio::spawn(async move { runtime.request("GET", "/desktop/status", None).await })
+            .await
+            .unwrap();
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body["configured"], false);
+}

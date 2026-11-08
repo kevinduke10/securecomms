@@ -58,3 +58,12 @@ The encrypted device profile also pins its original relay URL; editing the publi
 Initial native joins additionally require the MLS-authenticated Welcome author to equal the pinned invitation owner and the authenticated MLS roster to equal the exact verified invitation roster. This policy runs in the same receive transaction as state/history/cursor persistence. A different known contact cannot impersonate the owner merely by supplying the owner’s public fingerprint. The local multi-account harness retains its documented broader pin set for delayed Welcome fixtures. See [strict Welcome tests](../../crates/client/tests/welcome_authorization.rs).
 
 Explicit native sign-out persists an encrypted device lock across restarts; reopening the app cannot bypass it. The original account must authenticate again to unlock the preserved device store.
+
+CI checks the core/relay workspace on Linux with `cirra-desktop` excluded and
+checks/tests the shell in a separate macOS job after building its UI assets; see
+[workflow](../../.github/workflows/ci.yml). Native device checkpoint futures retain
+an exclusive runtime borrow so they remain Send for Tauri's async executor without
+requiring SQLite or the device runtime to be Sync. The
+[native executor regression test](../../crates/device/src/tests.rs) exercises this
+contract. Browser persistence still awaits its encrypted checkpoint before network
+requests; no storage or identity policy is relaxed by this build fix.

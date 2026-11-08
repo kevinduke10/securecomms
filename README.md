@@ -209,11 +209,19 @@ Infrastructure encryption at rest is separate from the client-side MLS encryptio
 
 ## Checks
 
+CI checks the core/relay workspace on Linux with `cirra-desktop` excluded. A
+separate macOS job builds the UI assets and checks/tests the desktop shell.
+For the full-workspace commands below, build the UI first on macOS (`npm ci`
+then `npm run build:ui`). On Linux, add `--exclude cirra-desktop` to the workspace
+Clippy/test commands; the desktop secure-storage implementation currently supports
+macOS only.
+
 ```sh
+npm ci
+npm run build:ui
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
-npm ci
 npx playwright install chromium
 npm run test:auth # Login, sessions, and device enrollment in an isolated workspace.
 npm run test:ui # Starts an isolated temporary workspace on port 3107; requires no AWS.

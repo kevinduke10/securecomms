@@ -112,7 +112,7 @@ impl DeviceRuntime {
     pub(super) fn save(&self) -> Result<()> {
         self.ensure_healthy()
     }
-    pub(super) async fn checkpoint(&self) -> Result<()> {
+    pub(super) async fn checkpoint(&mut self) -> Result<()> {
         self.ensure_healthy()?;
         let result = async {
             let database = self

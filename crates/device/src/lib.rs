@@ -490,7 +490,9 @@ async fn bounded_response(response: reqwest::Response, limit: usize) -> Result<V
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl DeviceRuntime {
-    async fn checkpoint(&self) -> Result<()> {
+    // Retain an exclusive borrow across await. SQLite is Send but not Sync;
+    // a shared runtime borrow would make native request futures non-Send.
+    async fn checkpoint(&mut self) -> Result<()> {
         self.ensure_healthy()
     }
 }

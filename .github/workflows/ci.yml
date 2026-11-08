@@ -13,10 +13,29 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - run: cargo test --workspace --all-features --locked
+      # The desktop shell currently supports macOS and is checked below.
+      - run: cargo clippy --workspace --exclude cirra-desktop --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --workspace --exclude cirra-desktop --all-features --locked
       - run: cargo run -p croaker-cli --locked -- demo
       - run: bash scripts/test-dynamodb.sh
+  desktop:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Tauri embeds the built frontend; it must exist on a clean checkout.
+      - run: npm run build:ui
+      - run: cargo clippy -p cirra-desktop --all-targets --all-features --locked -- -D warnings
+      - run: cargo test -p cirra-desktop --all-features --locked
   terraform:
     runs-on: ubuntu-latest
     steps:

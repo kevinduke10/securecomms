@@ -67,6 +67,11 @@ Do not copy a running device directory to create another device or synchronize i
 
 ## Checks and limits
 
+Run desktop checks on macOS after `npm ci` and `npm run build:ui`; Tauri embeds
+those assets at compile time. CI uses a separate macOS desktop job and excludes
+the shell from Linux core checks. This does not add Linux desktop support or a
+fallback credential store.
+
 ```sh
 cargo check -p cirra-desktop
 cargo test -p cirra-desktop --lib
