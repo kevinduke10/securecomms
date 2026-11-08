@@ -1,0 +1,18 @@
+.reaction-picker.with-reply { flex-direction: column; align-items: stretch; border-radius: 16px; }
+.quick-reactions { display: flex; align-items: center; gap: 3px; }
+.quick-reactions > button { width: 36px; height: 36px; border-radius: 10px; font-size: 23px; display: inline-flex; align-items: center; justify-content: center; }
+.quick-reactions > button:hover, .quick-reactions > button.selected { background: var(--hover); }
+.quick-reactions > .more-emoji { background: var(--soft); color: var(--text); border-radius: 50%; }
+.reaction-picker > .reply-action { width: 100%; height: 32px; display: flex; justify-content: flex-start; gap: 9px; padding: 6px 10px; margin-top: 4px; border-top: 1px solid var(--line); border-radius: 7px; font-size: 12px; color: var(--text); }
+.reply-draft { display: flex; align-items: center; gap: 10px; padding: 10px 13px; margin-bottom: 8px; border: 1px solid var(--line); border-left: 3px solid var(--accent); background: var(--soft); border-radius: 8px; }
+.reply-draft > div { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 0; }
+.reply-draft strong, .reply-quote strong { font-size: 10px; font-weight: 600; }
+.reply-draft span { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reply-quote { display: flex; flex-direction: column; gap: 4px; border-left: 2px solid currentColor; opacity: .85; padding: 5px 10px; margin: 0 0 9px; }
+.reply-quote > span { font-size: 11px; line-height: 1.5; max-height: 50px; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
+.receipt-status { display: inline-flex; align-items: center; gap: 3px; }
+.read-receipts-setting { display: flex; align-items: flex-start; gap: 8px; border-top: 1px solid var(--line); padding: 14px 7px 5px; margin-top: 10px; font-size: 10px; line-height: 1.7; }
+.read-receipts-setting input { accent-color: var(--accent); }
+.unavailable-messages { padding: 10px 24px; background: var(--warning-bg); color: var(--warning); border-bottom: 1px solid var(--line); font-size: 11px; line-height: 1.7; }
+.manage-group-members { padding: 0 23px 20px; }
+.receipt-privacy-note { margin: 6px 8px 10px; font-size: 10px; line-height: 1.6; color: var(--muted); }

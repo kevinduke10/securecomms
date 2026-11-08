@@ -21,6 +21,11 @@ pub fn router(store: Backend) -> Router {
             }),
         )
         .route("/v1/conversations", post(create))
+        .route("/v1/conversations/{id}", get(conversation_info))
+        .route(
+            "/v1/conversations/{id}/admissions",
+            post(admit).layer(DefaultBodyLimit::max(128 * 1024)),
+        )
         .route("/v1/conversations/{id}/events", post(append))
         .route("/v1/conversations/{id}/sync", get(sync))
         .route("/v1/devices/{id}/revoke", post(revoke))
@@ -61,6 +66,24 @@ async fn create(
         StatusCode::CREATED,
         Json(store.create(&actor, input).await?),
     ))
+}
+
+async fn conversation_info(
+    State(store): State<Backend>,
+    headers: HeaderMap,
+    Path(id): Path<ConversationId>,
+) -> Result<Json<Conversation>, StoreError> {
+    let actor = authenticate(&headers, &store).await?;
+    Ok(Json(store.conversation_info(&actor, id).await?))
+}
+async fn admit(
+    State(store): State<Backend>,
+    headers: HeaderMap,
+    Path(id): Path<ConversationId>,
+    Json(input): Json<membership::GroupAdmission>,
+) -> Result<Json<membership::AcceptedAdmission>, StoreError> {
+    let actor = authenticate(&headers, &store).await?;
+    Ok(Json(store.admit(&actor, id, input).await?))
 }
 
 async fn append(
@@ -132,4 +155,21 @@ impl IntoResponse for StoreError {
             .insert("cache-control", "no-store".parse().unwrap());
         response
     }
+}
+
+/// Account endpoints use Cognito JWTs; messaging endpoints retain approved-device credentials.
+pub fn router_with_login(store: Backend, verifier: Arc<crate::login::LoginVerifier>) -> Router {
+    router(store.clone())
+        .merge(crate::login::routes(store, verifier))
+        .layer(axum::middleware::map_response(
+            |mut response: Response| async move {
+                response
+                    .headers_mut()
+                    .insert("cache-control", "no-store".parse().unwrap());
+                response
+                    .headers_mut()
+                    .insert("x-content-type-options", "nosniff".parse().unwrap());
+                response
+            },
+        ))
 }

@@ -13,6 +13,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 rusqlite = { version = "0.37", features = ["bundled"] }
 zeroize = "1"
+rand = "0.8"
+hex.workspace = true
+sha2.workspace = true
+hkdf = "0.12"
 
 [dev-dependencies]
 tempfile = "3"

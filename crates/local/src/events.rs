@@ -69,11 +69,70 @@ pub struct Typing {
     pub expires_at: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageRef {
+    pub message_id: MessageId,
+    pub sender: DeviceId,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplyKind {
+    Reply,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reply {
+    pub version: u16,
+    pub kind: ReplyKind,
+    pub reply_to: MessageRef,
+    pub content: Content,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptKind {
+    Receipt,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptState {
+    Delivered,
+    Read,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Receipt {
+    pub version: u16,
+    pub kind: ReceiptKind,
+    pub state: ReceiptState,
+    pub targets: Vec<MessageRef>,
+}
+impl Receipt {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == 1 && !self.targets.is_empty() && self.targets.len() <= 64,
+            "Invalid receipt event."
+        );
+        let unique: HashSet<_> = self
+            .targets
+            .iter()
+            .map(|r| (r.sender, r.message_id))
+            .collect();
+        ensure!(
+            unique.len() == self.targets.len(),
+            "Duplicate receipt targets."
+        );
+        Ok(())
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 pub enum ChatEvent {
     Message(Content),
     Reaction(Reaction),
+    Reply(Reply),
+    Receipt(Receipt),
     Typing(Typing),
 }
 
@@ -89,30 +148,49 @@ pub struct ProjectedMessage {
     pub content: Content,
     /// One reaction per authenticated sender, with local pending status.
     pub reactions: BTreeMap<DeviceId, (String, bool)>,
+    /// References contain no quoted user-supplied text; snapshot resolves the target.
+    pub reply_to: Option<MessageRef>,
+    /// Monotonic authenticated recipient claims, per device; pending local events
+    /// are included to deduplicate retries, never to claim another device read.
+    pub receipts: BTreeMap<DeviceId, ReceiptState>,
 }
 
 pub fn project(history: Vec<HistoryMessage>) -> Result<Vec<ProjectedMessage>> {
     let mut messages = Vec::new();
     let mut indexes = HashMap::new();
     let mut reactions = Vec::new();
+    let mut receipts = Vec::new();
     for message in history {
-        match serde_json::from_slice::<ChatEvent>(&message.plaintext)? {
-            ChatEvent::Message(content) => {
-                indexes.insert((message.sender, message.message_id), messages.len());
-                messages.push(ProjectedMessage {
-                    message,
-                    content,
-                    reactions: BTreeMap::new(),
-                });
+        let (content, reply_to) = match serde_json::from_slice::<ChatEvent>(&message.plaintext)? {
+            ChatEvent::Message(content) => (content, None),
+            ChatEvent::Reply(reply) => {
+                if reply.version != 1 || reply.content.validate().is_err() {
+                    continue;
+                }
+                (reply.content, Some(reply.reply_to))
             }
             ChatEvent::Reaction(reaction) => {
-                // Invalid or orphaned control events never become chat messages.
                 if reaction.validate().is_ok() {
                     reactions.push((message.sender, message.pending, reaction));
                 }
+                continue;
             }
-            ChatEvent::Typing(_) => {} // Also tolerate history from older development builds.
-        }
+            ChatEvent::Receipt(receipt) => {
+                if receipt.validate().is_ok() {
+                    receipts.push((message.sender, receipt));
+                }
+                continue;
+            }
+            ChatEvent::Typing(_) => continue,
+        };
+        indexes.insert((message.sender, message.message_id), messages.len());
+        messages.push(ProjectedMessage {
+            message,
+            content,
+            reactions: BTreeMap::new(),
+            reply_to,
+            receipts: BTreeMap::new(),
+        });
     }
     for (actor, pending, reaction) in reactions {
         if let Some(&index) = indexes.get(&(reaction.target_sender, reaction.target_message_id)) {
@@ -120,6 +198,20 @@ pub fn project(history: Vec<HistoryMessage>) -> Result<Vec<ProjectedMessage>> {
                 messages[index].reactions.insert(actor, (emoji, pending));
             } else {
                 messages[index].reactions.remove(&actor);
+            }
+        }
+    }
+    for (actor, receipt) in receipts {
+        for target in receipt.targets {
+            if actor == target.sender {
+                continue;
+            }
+            if let Some(&index) = indexes.get(&(target.sender, target.message_id)) {
+                let previous = messages[index]
+                    .receipts
+                    .entry(actor)
+                    .or_insert(receipt.state);
+                *previous = (*previous).max(receipt.state);
             }
         }
     }

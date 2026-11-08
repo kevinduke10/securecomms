@@ -45,6 +45,22 @@ enum Command {
         #[arg(long)]
         credentials: PathBuf,
     },
+    /// Operator-only association of an IdP subject with a tenant and role.
+    GrantAccount {
+        #[arg(long, default_value = "data/croaker.sqlite")]
+        database: PathBuf,
+        #[arg(long)]
+        grant: PathBuf,
+    },
+    #[cfg(feature = "aws")]
+    GrantAccountAws {
+        #[arg(long)]
+        table: String,
+        #[arg(long)]
+        grant: PathBuf,
+        #[arg(long)]
+        endpoint_url: Option<String>,
+    },
     /// Run real three-device MLS messaging, offline catch-up, and revocation.
     Demo {
         #[arg(long, default_value = "data/demo.sqlite")]
@@ -139,7 +155,7 @@ async fn main() -> Result<()> {
             );
             let store = database(&path)?;
             let listener = tokio::net::TcpListener::bind(bind).await?;
-            println!("Croaker local relay: http://{}", listener.local_addr()?);
+            println!("Cirra local relay: http://{}", listener.local_addr()?);
             axum_serve(listener, Arc::new(store)).await?;
         }
         Command::InitDemo { output } => {
@@ -166,6 +182,34 @@ async fn main() -> Result<()> {
         } => {
             provision(&database(&path)?, &read_credentials(&credentials)?).await?;
             println!("Registered devices; credentials were not printed.");
+        }
+        Command::GrantAccount {
+            database: path,
+            grant,
+        } => {
+            let record: croaker_relay::identity::AccountGrant =
+                serde_json::from_slice(&std::fs::read(grant)?)?;
+            database(&path)?.grant_account(record).await?;
+            println!("Granted account membership; no device secrets were printed.");
+        }
+        #[cfg(feature = "aws")]
+        Command::GrantAccountAws {
+            table,
+            grant,
+            endpoint_url,
+        } => {
+            let record: croaker_relay::identity::AccountGrant =
+                serde_json::from_slice(&std::fs::read(grant)?)?;
+            let mut config = aws_config::defaults(aws_config::BehaviorVersion::latest());
+            if let Some(endpoint) = endpoint_url {
+                config = config.endpoint_url(endpoint);
+            }
+            let store = croaker_relay::dynamodb::DynamoStore::new(
+                aws_sdk_dynamodb::Client::new(&config.load().await),
+                table,
+            );
+            store.grant_account(record).await?;
+            println!("Granted account membership in DynamoDB.");
         }
         Command::Demo {
             database: path,
@@ -222,7 +266,17 @@ async fn main() -> Result<()> {
 }
 
 async fn axum_serve(listener: tokio::net::TcpListener, store: Arc<dyn Store>) -> Result<()> {
-    croaker_relay::serve(listener, api::router(store)).await?;
+    let router = if std::env::var_os("CROAKER_COGNITO_ISSUER").is_some() {
+        api::router_with_login(
+            store,
+            Arc::new(croaker_relay::login::LoginVerifier::new(
+                croaker_relay::login::LoginConfig::from_env()?,
+            )?),
+        )
+    } else {
+        api::router(store)
+    };
+    croaker_relay::serve(listener, router).await?;
     Ok(())
 }
 

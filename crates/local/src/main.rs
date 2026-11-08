@@ -3,7 +3,7 @@ use clap::Parser;
 use std::{net::SocketAddr, path::PathBuf};
 
 #[derive(Parser)]
-#[command(about = "Croaker local UI and multi-account test workspace. Never deploy to AWS.")]
+#[command(about = "Cirra local UI and multi-account test workspace. Never deploy to AWS.")]
 struct Args {
     #[arg(long, default_value = "127.0.0.1:3000")]
     bind: SocketAddr,
@@ -29,13 +29,15 @@ async fn main() -> Result<()> {
     );
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
     let address = listener.local_addr()?;
-    let workspace = croaker_local::Workspace::open(args.data_dir).await?;
+    let options = croaker_local::auth::AuthOptions::from_env(address.port())?;
+    let mut workspace = croaker_local::Workspace::open(args.data_dir).await?;
+    workspace.configure_login(&options).await?;
     println!(
-        "\n  Croaker is ready → http://{address}\n  Open /?as=bob in a second tab to test messaging.\n  Local test accounts only. Press Ctrl+C to stop.\n"
+        "\n  Cirra is ready → http://{address}\n  Sign in with a test account. Use another browser profile to chat.\n  Local test accounts only. Press Ctrl+C to stop.\n"
     );
     croaker_relay::serve(
         listener,
-        croaker_local::router(workspace, assets, address.port()),
+        croaker_local::router_with_auth(workspace, assets, address.port(), options),
     )
     .await?;
     Ok(())

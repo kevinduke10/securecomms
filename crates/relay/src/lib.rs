@@ -1,6 +1,8 @@
 pub mod api;
 #[cfg(feature = "aws")]
 pub mod dynamodb;
+pub mod identity;
+pub mod login;
 #[cfg(feature = "local")]
 pub mod sqlite;
 
@@ -67,6 +69,33 @@ pub fn validate_conversation(
     Ok(devices)
 }
 
+pub fn validate_admission(
+    actor: &Principal,
+    group: &Conversation,
+    input: &membership::GroupAdmission,
+) -> Result<Conversation> {
+    input.validate().map_err(StoreError::Invalid)?;
+    if group.owner != actor.device_id {
+        return Err(StoreError::NotFound);
+    }
+    let mut expected = input.expected_devices.clone();
+    expected.sort();
+    let mut current = group.devices.clone();
+    current.sort();
+    if expected != current {
+        return Err(StoreError::Conflict);
+    }
+    let mut next = group.clone();
+    next.devices.push(input.added_device);
+    next.devices.sort();
+    Ok(next)
+}
+pub fn admission_hash(input: &membership::GroupAdmission) -> String {
+    hex::encode(Sha256::digest(
+        serde_json::to_vec(input).expect("serializable admission"),
+    ))
+}
+
 pub fn validate_event(
     principal: &Principal,
     conversation: &Conversation,
@@ -120,10 +149,42 @@ pub fn page(events: Vec<StoredEvent>, cursor: u64, limit: usize, device: DeviceI
 #[async_trait]
 pub trait Store: Send + Sync {
     async fn authenticate(&self, token: &str) -> Result<Principal>;
+    async fn revoke_owned_device(
+        &self,
+        actor: &Principal,
+        account_id: &str,
+        device: DeviceId,
+    ) -> Result<()>;
+    async fn grant_account(&self, grant: identity::AccountGrant) -> Result<()>;
+    async fn account(&self, id: &str) -> Result<identity::AccountRecord>;
+    async fn request_enrollment(
+        &self,
+        account_id: &str,
+        input: croaker_protocol::enrollment::EnrollmentInput,
+    ) -> Result<()>;
+    async fn decide_enrollment(
+        &self,
+        actor: &Principal,
+        account_id: &str,
+        id: MessageId,
+        fingerprint: &str,
+        approve: bool,
+    ) -> Result<()>;
     /// Operator-only entry point, never exposed as an HTTP enrollment endpoint.
     async fn provision(&self, principal: &Principal, token: &str) -> Result<()>;
     async fn revoke(&self, actor: &Principal, device: DeviceId) -> Result<()>;
     async fn create(&self, actor: &Principal, input: CreateConversation) -> Result<Conversation>;
+    async fn conversation_info(
+        &self,
+        actor: &Principal,
+        id: ConversationId,
+    ) -> Result<Conversation>;
+    async fn admit(
+        &self,
+        actor: &Principal,
+        id: ConversationId,
+        input: membership::GroupAdmission,
+    ) -> Result<membership::AcceptedAdmission>;
     async fn append(
         &self,
         actor: &Principal,

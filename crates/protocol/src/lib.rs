@@ -144,3 +144,6 @@ pub struct ApiError {
     pub code: String,
     pub message: String,
 }
+
+pub mod enrollment;
+pub mod membership;

@@ -26,8 +26,15 @@ use tower_http::services::ServeDir;
 use zeroize::Zeroizing;
 
 pub const MAX_ATTACHMENT: usize = 32 * 1024;
+pub mod auth;
+mod backups;
+mod enrollment;
 mod events;
-use events::{ChatEvent, REACTION_EMOJIS, Reaction, ReactionKind, TYPING_TTL, Typing, TypingKind};
+mod membership;
+use events::{
+    ChatEvent, MessageRef, REACTION_EMOJIS, Reaction, ReactionKind, Receipt, ReceiptKind,
+    ReceiptState, Reply, ReplyKind, TYPING_TTL, Typing, TypingKind,
+};
 
 struct TypingState {
     sequence: u64,
@@ -43,6 +50,8 @@ struct Profile {
     token: String,
     vault_key: String,
     binding: DeviceBinding,
+    #[serde(default)]
+    owner: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Chat {
@@ -57,6 +66,8 @@ struct Manifest {
     version: u16,
     profiles: Vec<Profile>,
     chats: Vec<Chat>,
+    #[serde(default)]
+    read_receipts: HashMap<String, bool>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -187,6 +198,7 @@ impl Workspace {
                     token: hex::encode(*random_key()),
                     vault_key: hex::encode(*key),
                     binding,
+                    owner: Some(alias.into()),
                 };
                 relay.provision(&profile.principal, &profile.token).await?;
                 clients.insert(
@@ -199,6 +211,7 @@ impl Workspace {
                 version: 1,
                 profiles,
                 chats: Vec::new(),
+                read_receipts: HashMap::new(),
             }
         } else {
             let bytes = Zeroizing::new(std::fs::read(path)?);
@@ -316,6 +329,10 @@ impl Workspace {
                 workspace.sync_all().await?;
             }
         }
+        workspace
+            .configure_login(&auth::AuthOptions::demo(false))
+            .await?;
+        workspace.recover_group_memberships().await?;
         Ok(workspace)
     }
 
@@ -343,6 +360,7 @@ impl Workspace {
         if !self.online.get(alias).copied().unwrap_or(false) {
             return Ok(());
         }
+        self.flush_group_admissions(alias).await?;
         let profile = self.profile(alias)?;
         loop {
             let pending = self.clients[alias].pending()?;
@@ -388,18 +406,20 @@ impl Workspace {
                     .relay
                     .sync(&actor, chat.id, cursor, MAX_SYNC_PAGE)
                     .await?;
-                let transient = self
+                let approvals = self.approved_group_additions(chat.id)?;
+                let result = self
                     .clients
                     .get_mut(alias)
                     .unwrap()
-                    .apply_page_with_transient(
+                    .apply_page_with_membership_report(
                         chat.id,
                         cursor,
                         &page,
                         &peers,
                         events::is_transient,
+                        &approvals,
                     )?;
-                for signal in transient {
+                for signal in result.transient {
                     if let Ok(ChatEvent::Typing(event)) =
                         serde_json::from_slice(&signal.message.plaintext)
                     {
@@ -432,7 +452,9 @@ impl Workspace {
                     break;
                 }
             }
+            self.queue_receipts(alias, chat.id, ReceiptState::Delivered, None)?;
         }
+        self.flush(alias).await?;
         Ok(())
     }
     async fn sync_all(&mut self) -> Result<()> {
@@ -549,6 +571,173 @@ impl Workspace {
         Ok(())
     }
 
+    pub async fn send_reply(
+        &mut self,
+        alias: &str,
+        conversation: ConversationId,
+        request_id: MessageId,
+        content: Content,
+        target_message: MessageId,
+        target_alias: &str,
+    ) -> Result<()> {
+        content.validate()?;
+        self.member_chat(alias, conversation)?;
+        self.sync_profile(alias).await?;
+        let target = self.profile(target_alias)?.principal.device_id;
+        ensure!(
+            events::project(self.clients[alias].history(conversation)?)?
+                .iter()
+                .any(|m| m.message.sender == target
+                    && m.message.message_id == target_message
+                    && !m.message.pending),
+            "Reply target is not available in this conversation."
+        );
+        let event = Reply {
+            version: 1,
+            kind: ReplyKind::Reply,
+            reply_to: MessageRef {
+                message_id: target_message,
+                sender: target,
+            },
+            content,
+        };
+        let bytes = Zeroizing::new(serde_json::to_vec(&event)?);
+        self.clients
+            .get_mut(alias)
+            .context("Unknown account")?
+            .queue_message_once(conversation, request_id, &bytes)?;
+        self.flush(alias).await?;
+        let _ = self.publish_typing(alias, conversation, false).await;
+        Ok(())
+    }
+    fn queue_receipts(
+        &mut self,
+        alias: &str,
+        conversation: ConversationId,
+        state: ReceiptState,
+        targets: Option<Vec<MessageRef>>,
+    ) -> Result<()> {
+        let actor = self.profile(alias)?.principal.device_id;
+        let history = events::project(self.clients[alias].history(conversation)?)?;
+        let mut selected = Vec::new();
+        if let Some(targets) = targets {
+            ensure!(targets.len() <= 64, "Read at most 64 messages per request.");
+            for target in targets {
+                let message = history
+                    .iter()
+                    .find(|m| {
+                        m.message.sender == target.sender
+                            && m.message.message_id == target.message_id
+                            && !m.message.pending
+                            && target.sender != actor
+                    })
+                    .context("Receipt target is not an incoming message in this conversation.")?;
+                if message
+                    .receipts
+                    .get(&actor)
+                    .is_none_or(|previous| *previous < state)
+                {
+                    selected.push(target);
+                }
+            }
+        } else {
+            for message in &history {
+                if message.message.sender != actor
+                    && !message.message.pending
+                    && message
+                        .receipts
+                        .get(&actor)
+                        .is_none_or(|previous| *previous < state)
+                {
+                    selected.push(MessageRef {
+                        message_id: message.message.message_id,
+                        sender: message.message.sender,
+                    });
+                }
+            }
+        }
+        selected.sort();
+        selected.dedup();
+        for targets in selected.chunks(64) {
+            let event = Receipt {
+                version: 1,
+                kind: ReceiptKind::Receipt,
+                state,
+                targets: targets.to_vec(),
+            };
+            let bytes = Zeroizing::new(serde_json::to_vec(&event)?);
+            use sha2::{Digest, Sha256};
+            let mut digest = Sha256::new();
+            digest.update(b"croaker-receipt-event-v1");
+            digest.update(conversation.0.as_bytes());
+            digest.update(actor.0.as_bytes());
+            digest.update(bytes.as_slice());
+            let id = hex::encode(digest.finalize());
+            let id: MessageId = format!(
+                "{}-{}-{}-{}-{}",
+                &id[..8],
+                &id[8..12],
+                &id[12..16],
+                &id[16..20],
+                &id[20..32]
+            )
+            .parse()?;
+            self.clients
+                .get_mut(alias)
+                .unwrap()
+                .queue_message_once(conversation, id, &bytes)?;
+        }
+        Ok(())
+    }
+    pub fn set_read_receipts(&mut self, alias: &str, enabled: bool) -> Result<()> {
+        self.profile(alias)?;
+        let previous = self.manifest.read_receipts.insert(alias.into(), enabled);
+        if let Err(error) = self.save() {
+            match previous {
+                Some(value) => {
+                    self.manifest.read_receipts.insert(alias.into(), value);
+                }
+                None => {
+                    self.manifest.read_receipts.remove(alias);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+    pub async fn mark_read(
+        &mut self,
+        alias: &str,
+        conversation: ConversationId,
+        targets: Vec<(MessageId, String)>,
+    ) -> Result<()> {
+        self.member_chat(alias, conversation)?;
+        ensure!(
+            self.manifest
+                .read_receipts
+                .get(alias)
+                .copied()
+                .unwrap_or(false),
+            "Read receipts are disabled for this device."
+        );
+        ensure!(
+            !targets.is_empty() && targets.len() <= 64,
+            "Choose 1–64 incoming messages."
+        );
+        let references = targets
+            .into_iter()
+            .map(|(message_id, sender)| {
+                self.profile(&sender).map(|p| MessageRef {
+                    message_id,
+                    sender: p.principal.device_id,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.queue_receipts(alias, conversation, ReceiptState::Read, Some(references))?;
+        self.flush(alias).await?;
+        Ok(())
+    }
+
     pub async fn react(
         &mut self,
         alias: &str,
@@ -634,7 +823,40 @@ impl Workspace {
                 continue;
             }
             let mut messages = Vec::new();
-            for projected in events::project(self.clients[alias].history(chat.id)?)? {
+            let projected_history = events::project(self.clients[alias].history(chat.id)?)?;
+            let sources: HashMap<_, _> = projected_history
+                .iter()
+                .enumerate()
+                .map(|(index, m)| {
+                    (
+                        (m.message.sender, m.message.message_id),
+                        (index, m.content.clone()),
+                    )
+                })
+                .collect();
+            for (message_index, projected) in projected_history.into_iter().enumerate() {
+                let read_by_me = projected.receipts.get(&current.principal.device_id)
+                    == Some(&ReceiptState::Read);
+                let aliases_for = |minimum: ReceiptState| {
+                    projected
+                        .receipts
+                        .iter()
+                        .filter(|(_, state)| **state >= minimum)
+                        .filter_map(|(device, _)| {
+                            self.manifest
+                                .profiles
+                                .iter()
+                                .find(|p| p.principal.device_id == *device)
+                                .map(|p| p.alias.clone())
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let receipts = serde_json::json!({"delivered":aliases_for(ReceiptState::Delivered),"read":aliases_for(ReceiptState::Read)});
+                let reply_to=projected.reply_to.as_ref().map(|reference| {
+                    let target=sources.get(&(reference.sender,reference.message_id)).filter(|(index,_)|*index<message_index);
+                    let sender=self.manifest.profiles.iter().find(|p|p.principal.device_id==reference.sender).map(|p|p.alias.as_str());
+                    serde_json::json!({"id":reference.message_id,"sender":sender,"available":target.is_some(),"text":target.map(|(_,content)|content.text.as_str()),"attachment_name":target.and_then(|(_,content)|content.attachment.as_ref().map(|f|f.name.as_str()))})
+                });
                 let message = projected.message;
                 let content = projected.content;
                 let sender = self
@@ -664,7 +886,7 @@ impl Workspace {
                         .unwrap_or(usize::MAX)
                 });
                 let reactions: Vec<_> = grouped.into_iter().map(|(emoji,(users,pending))|serde_json::json!({"emoji":emoji,"users":users,"pending":pending})).collect();
-                messages.push(serde_json::json!({"id":message.message_id,"sender":sender.alias,"sent_at":message.sent_at,"text":content.text,"attachment":content.attachment,"pending":message.pending,"reactions":reactions}));
+                messages.push(serde_json::json!({"id":message.message_id,"sender":sender.alias,"sent_at":message.sent_at,"text":content.text,"attachment":content.attachment,"pending":message.pending,"reactions":reactions,"reply_to":reply_to,"receipts":receipts,"read_by_me":read_by_me}));
             }
             let title = if chat.kind == "direct" {
                 self.profile(chat.members.iter().find(|m| m.as_str() != alias).unwrap())?
@@ -688,10 +910,10 @@ impl Workspace {
                 })
                 .map(|p| p.alias.clone())
                 .collect();
-            chats.push(serde_json::json!({"id":chat.id,"title":title,"kind":chat.kind,"members":chat.members,"owner":chat.owner,"messages":messages,"typing":typing}));
+            chats.push(serde_json::json!({"id":chat.id,"title":title,"kind":chat.kind,"members":chat.members,"owner":chat.owner,"messages":messages,"typing":typing,"unavailable_messages":self.clients[alias].stale_application_count(chat.id)?}));
         }
         Ok(
-            serde_json::json!({"test_mode":true,"current_profile":current.alias,"profiles":profiles,"conversations":chats,"online":self.online[alias],"attachment_limit":MAX_ATTACHMENT,"reaction_options":REACTION_EMOJIS}),
+            serde_json::json!({"test_mode":true,"current_profile":current.alias,"profiles":profiles,"conversations":chats,"online":self.online[alias],"attachment_limit":MAX_ATTACHMENT,"reaction_options":REACTION_EMOJIS,"read_receipts":self.manifest.read_receipts.get(alias).copied().unwrap_or(false)}),
         )
     }
 }
@@ -707,6 +929,25 @@ struct SendInput {
     conversation_id: ConversationId,
     request_id: MessageId,
     content: Content,
+    #[serde(default)]
+    reply_to: Option<ReplyInput>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReplyInput {
+    message_id: MessageId,
+    sender: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadInput {
+    conversation_id: ConversationId,
+    targets: Vec<ReplyInput>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReceiptSettingsInput {
+    enabled: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -741,10 +982,21 @@ impl From<anyhow::Error> for LocalError {
         Self(error)
     }
 }
+impl From<croaker_relay::StoreError> for LocalError {
+    fn from(error: croaker_relay::StoreError) -> Self {
+        Self(error.into())
+    }
+}
 impl IntoResponse for LocalError {
     fn into_response(self) -> Response {
         (
-            StatusCode::BAD_REQUEST,
+            match self.0.downcast_ref::<croaker_relay::StoreError>() {
+                Some(croaker_relay::StoreError::Unauthorized) => StatusCode::UNAUTHORIZED,
+                Some(croaker_relay::StoreError::NotFound) => StatusCode::NOT_FOUND,
+                Some(croaker_relay::StoreError::Conflict) => StatusCode::CONFLICT,
+                Some(croaker_relay::StoreError::Unavailable) => StatusCode::SERVICE_UNAVAILABLE,
+                _ => StatusCode::BAD_REQUEST,
+            },
             Json(serde_json::json!({"error":self.0.to_string()})),
         )
             .into_response()
@@ -761,16 +1013,59 @@ async fn send(
     RoutePath(alias): RoutePath<String>,
     Json(input): Json<SendInput>,
 ) -> std::result::Result<StatusCode, LocalError> {
+    let mut workspace = workspace.lock().await;
+    if let Some(target) = input.reply_to {
+        workspace
+            .send_reply(
+                &alias,
+                input.conversation_id,
+                input.request_id,
+                input.content,
+                target.message_id,
+                &target.sender,
+            )
+            .await?;
+    } else {
+        workspace
+            .send(
+                &alias,
+                input.conversation_id,
+                input.request_id,
+                input.content,
+            )
+            .await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn read_messages(
+    State(workspace): State<Shared>,
+    RoutePath(alias): RoutePath<String>,
+    Json(input): Json<ReadInput>,
+) -> std::result::Result<StatusCode, LocalError> {
     workspace
         .lock()
         .await
-        .send(
+        .mark_read(
             &alias,
             input.conversation_id,
-            input.request_id,
-            input.content,
+            input
+                .targets
+                .into_iter()
+                .map(|r| (r.message_id, r.sender))
+                .collect(),
         )
         .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn receipt_settings(
+    State(workspace): State<Shared>,
+    RoutePath(alias): RoutePath<String>,
+    Json(input): Json<ReceiptSettingsInput>,
+) -> std::result::Result<StatusCode, LocalError> {
+    workspace
+        .lock()
+        .await
+        .set_read_receipts(&alias, input.enabled)?;
     Ok(StatusCode::NO_CONTENT)
 }
 async fn create(
@@ -842,12 +1137,30 @@ async fn online(
 }
 
 pub fn router(workspace: Workspace, assets: PathBuf, port: u16) -> Router {
+    router_with_auth(workspace, assets, port, auth::AuthOptions::demo(false))
+}
+/// Explicit opt-in for existing unrestricted multi-account development tests.
+pub fn demo_test_router(workspace: Workspace, assets: PathBuf, port: u16) -> Router {
+    router_with_auth(workspace, assets, port, auth::AuthOptions::demo(true))
+}
+pub fn router_with_auth(
+    workspace: Workspace,
+    assets: PathBuf,
+    port: u16,
+    options: auth::AuthOptions,
+) -> Router {
     let hosts: Vec<String> = ["127.0.0.1", "localhost", "[::1]"]
         .iter()
         .map(|host| format!("{host}:{port}"))
         .collect();
-    let api = Router::new().route("/state",get(snapshot)).route("/{profile}/send",post(send)).route("/{profile}/conversations",post(create)).route("/{profile}/online",post(online)).route("/{profile}/reactions",post(react)).route("/{profile}/typing",post(typing))
+    let workspace = Arc::new(Mutex::new(workspace));
+    let authentication = auth::AuthService::new(workspace.clone(), options, port);
+    let session_guard = authentication.clone();
+    let api = Router::new().route("/state",get(snapshot)).route("/{profile}/send",post(send)).route("/{profile}/conversations",post(create)).route("/{profile}/online",post(online)).route("/{profile}/reactions",post(react)).route("/{profile}/typing",post(typing)).route("/{profile}/read",post(read_messages)).route("/{profile}/receipts/settings",post(receipt_settings))
         .layer(DefaultBodyLimit::max(64 * 1024))
+        .merge(backups::routes())
+        .merge(membership::routes())
+        .layer(middleware::from_fn(move |request:axum::extract::Request,next:Next| {let auth=session_guard.clone();async move {auth.guard(request,next).await}}))
         .layer(middleware::from_fn(move |request: axum::extract::Request,next: Next| {
             let hosts = hosts.clone();
             async move {
@@ -860,8 +1173,8 @@ pub fn router(workspace: Workspace, assets: PathBuf, port: u16) -> Router {
                 }
                 next.run(request).await
             }
-        })).with_state(Arc::new(Mutex::new(workspace)));
-    Router::new().nest("/local-api",api).route("/healthz",get(||async {"ok"})).fallback_service(ServeDir::new(assets))
+        })).with_state(workspace);
+    Router::new().merge(auth::routes(authentication)).nest("/local-api",api).route("/healthz",get(||async {"ok"})).fallback_service(ServeDir::new(assets))
         .layer(middleware::map_response(|mut response: Response|async move {
             let headers = response.headers_mut();
             headers.insert("cache-control",HeaderValue::from_static("no-store"));

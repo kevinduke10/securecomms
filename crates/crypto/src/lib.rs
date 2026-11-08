@@ -120,6 +120,7 @@ fn group_id(tenant: TenantId, conversation: ConversationId) -> GroupId {
 fn config() -> MlsGroupCreateConfig {
     MlsGroupCreateConfig::builder()
         .ciphersuite(SUITE)
+        .max_past_epochs(1)
         .use_ratchet_tree_extension(true)
         .wire_format_policy(PURE_CIPHERTEXT_WIRE_FORMAT_POLICY)
         .build()
@@ -163,6 +164,25 @@ impl Device {
             binding,
             groups: BTreeMap::new(),
         })
+    }
+
+    /// Sign a domain-separated enrollment proof using this fresh device identity.
+    pub fn sign_enrollment(
+        &self,
+        input: &croaker_protocol::enrollment::EnrollmentInput,
+        account_id: &str,
+    ) -> Result<Vec<u8>> {
+        use openmls_traits::signatures::Signer;
+        if input.binding.device_id != self.binding.device_id
+            || input.binding.tenant_id != self.binding.tenant_id
+            || input.binding.signature_key != self.binding.signature_key
+        {
+            return Err(CryptoError::InvalidInput);
+        }
+        checked(
+            self.signer.sign(&input.signing_bytes(account_id)),
+            "sign enrollment",
+        )
     }
 
     pub fn binding(&self) -> &DeviceBinding {
@@ -247,6 +267,10 @@ impl Device {
             .groups
             .get_mut(&conversation)
             .ok_or(CryptoError::UnknownConversation)?;
+        checked(
+            group.set_configuration(self.provider.storage(), config().join_config()),
+            "configure delayed application retention",
+        )?;
         let (commit, welcome, _) = checked(
             group.add_members(&self.provider, &self.signer, &packages),
             "add member",
@@ -410,6 +434,157 @@ impl Device {
         checked(
             group.merge_staged_commit(&self.provider, *commit),
             "merge authorized removal",
+        )?;
+        Ok(())
+    }
+
+    pub fn conversation_devices(&self, conversation: ConversationId) -> Result<Vec<DeviceId>> {
+        let group = self
+            .groups
+            .get(&conversation)
+            .ok_or(CryptoError::UnknownConversation)?;
+        let prefix = format!("croaker:v1:{}:", self.binding.tenant_id);
+        let mut devices = Vec::new();
+        for member in group.members() {
+            let credential = BasicCredential::try_from(member.credential)
+                .map_err(|_| CryptoError::IdentityMismatch)?;
+            let text = std::str::from_utf8(credential.identity())
+                .map_err(|_| CryptoError::IdentityMismatch)?;
+            devices.push(
+                text.strip_prefix(&prefix)
+                    .and_then(|value| value.parse().ok())
+                    .ok_or(CryptoError::IdentityMismatch)?,
+            );
+        }
+        devices.sort();
+        Ok(devices)
+    }
+
+    pub fn conversation_epoch(&self, conversation: ConversationId) -> Result<u64> {
+        self.groups
+            .get(&conversation)
+            .map(|group| group.epoch().as_u64())
+            .ok_or(CryptoError::UnknownConversation)
+    }
+
+    /// A routing disposition only: no plaintext/authentication claim is made for
+    /// ciphertext from epochs whose keys this device does not hold. Restrict this
+    /// to well-framed private Application packets for this exact MLS group.
+    pub fn stale_application(
+        &self,
+        conversation: ConversationId,
+        ciphertext: &[u8],
+        join_epoch: u64,
+    ) -> Result<bool> {
+        if ciphertext.len() > MAX_CIPHERTEXT_BYTES {
+            return Err(CryptoError::InvalidInput);
+        }
+        let message = checked(
+            MlsMessageIn::tls_deserialize_exact(ciphertext),
+            "parse application epoch",
+        )?;
+        let message = checked(
+            message.try_into_protocol_message(),
+            "validate application epoch type",
+        )?;
+        if message.group_id() != &group_id(self.binding.tenant_id, conversation) {
+            return Err(CryptoError::IdentityMismatch);
+        }
+        if message.wire_format() != WireFormat::PrivateMessage
+            || message.content_type() != ContentType::Application
+        {
+            return Err(CryptoError::InvalidInput);
+        }
+        let current = self.conversation_epoch(conversation)?;
+        if join_epoch > current {
+            return Err(CryptoError::InvalidInput);
+        }
+        let floor = join_epoch.max(current.saturating_sub(1));
+        Ok(message.epoch().as_u64() < floor)
+    }
+
+    pub fn has_conversation(&self, conversation: ConversationId) -> bool {
+        self.groups.contains_key(&conversation)
+    }
+
+    /// Merge exactly one approved Add authored by the pinned group owner.
+    /// Neither a relay roster nor a valid MLS signature alone constitutes approval.
+    pub fn apply_addition(
+        &mut self,
+        conversation: ConversationId,
+        ciphertext: &[u8],
+        authority: &DeviceBinding,
+        added: &DeviceBinding,
+    ) -> Result<()> {
+        if authority.tenant_id != self.binding.tenant_id
+            || added.tenant_id != self.binding.tenant_id
+            || ciphertext.len() > MAX_CIPHERTEXT_BYTES
+        {
+            return Err(CryptoError::IdentityMismatch);
+        }
+        let message = checked(
+            MlsMessageIn::tls_deserialize_exact(ciphertext),
+            "parse addition",
+        )?;
+        let message = checked(
+            message.try_into_protocol_message(),
+            "validate addition type",
+        )?;
+        let group = self
+            .groups
+            .get_mut(&conversation)
+            .ok_or(CryptoError::UnknownConversation)?;
+        checked(
+            group.set_configuration(self.provider.storage(), config().join_config()),
+            "configure delayed application retention",
+        )?;
+        let members: Vec<_> = group.members().collect();
+        let authority_index = members
+            .iter()
+            .find(|member| {
+                member.credential == authority.credential().credential
+                    && member.signature_key == authority.signature_key
+            })
+            .map(|m| m.index)
+            .ok_or(CryptoError::IdentityMismatch)?;
+        if members
+            .iter()
+            .any(|member| member.credential == added.credential().credential)
+        {
+            return Err(CryptoError::IdentityMismatch);
+        }
+        let processed = checked(
+            group.process_message(&self.provider, message),
+            "authenticate addition",
+        )?;
+        if processed.sender() != &Sender::Member(authority_index) {
+            return Err(CryptoError::IdentityMismatch);
+        }
+        let ProcessedMessageContent::StagedCommitMessage(commit) = processed.into_content() else {
+            return Err(CryptoError::InvalidInput);
+        };
+        let mut proposals = commit.queued_proposals();
+        let valid = match proposals.next().map(|p| p.proposal()) {
+            Some(Proposal::Add(proposal)) => {
+                let leaf = proposal.key_package().leaf_node();
+                leaf.credential() == &added.credential().credential
+                    && leaf.signature_key().as_slice() == added.signature_key
+            }
+            _ => false,
+        };
+        if !valid
+            || proposals.next().is_some()
+            || commit.update_path_leaf_node().is_some_and(|leaf| {
+                leaf.credential() != &authority.credential().credential
+                    || leaf.signature_key().as_slice() != authority.signature_key
+            })
+        {
+            return Err(CryptoError::IdentityMismatch);
+        }
+        drop(proposals);
+        checked(
+            group.merge_staged_commit(&self.provider, *commit),
+            "merge authorized addition",
         )?;
         Ok(())
     }

@@ -72,6 +72,24 @@ impl DynamoStore {
             .map_err(|_| StoreError::Unavailable)
     }
 
+    fn account_update(
+        &self,
+        id: &str,
+        previous: A,
+        record: &identity::AccountRecord,
+    ) -> Result<TransactWriteItem> {
+        let update = Update::builder()
+            .table_name(&self.table)
+            .set_key(Some(key(&format!("ACCOUNT#{id}"), "IDENTITY")))
+            .update_expression("SET #doc = :next")
+            .condition_expression("#doc = :previous")
+            .expression_attribute_names("#doc", "document")
+            .expression_attribute_values(":next", encoded(record)?)
+            .expression_attribute_values(":previous", previous)
+            .build()
+            .map_err(|_| StoreError::Unavailable)?;
+        Ok(TransactWriteItem::builder().update(update).build())
+    }
     async fn active(&self, actor: &Principal) -> Result<()> {
         let item = self
             .get(&tenant_key(actor.tenant_id), &device_key(actor.device_id))
@@ -169,6 +187,140 @@ impl DynamoStore {
 
 #[async_trait]
 impl Store for DynamoStore {
+    async fn revoke_owned_device(
+        &self,
+        actor: &Principal,
+        account_id: &str,
+        device: DeviceId,
+    ) -> Result<()> {
+        self.active(actor).await?;
+        let mut record = self.account(account_id).await?;
+        let previous = encoded(&record)?;
+        record.can_approve(actor)?;
+        if !record.devices.iter().any(|d| d.binding.device_id == device) {
+            return Err(StoreError::NotFound);
+        }
+        for entry in &mut record.devices {
+            if entry.binding.device_id == device {
+                entry.revoked = true;
+            }
+        }
+        let mut update = Update::builder()
+            .table_name(&self.table)
+            .set_key(Some(key(&tenant_key(actor.tenant_id), &device_key(device))))
+            .update_expression("SET revoked = :yes")
+            .expression_attribute_values(":yes", A::Bool(true));
+        let mut writes = vec![self.account_update(account_id, previous, &record)?];
+        if actor.device_id == device {
+            update = update
+                .condition_expression("principal = :principal AND revoked = :no")
+                .expression_attribute_values(":principal", encoded(actor)?)
+                .expression_attribute_values(":no", A::Bool(false));
+        } else {
+            writes.push(self.guard(actor)?);
+            update = update.condition_expression("attribute_exists(pk)");
+        }
+        writes.push(
+            TransactWriteItem::builder()
+                .update(update.build().map_err(|_| StoreError::Unavailable)?)
+                .build(),
+        );
+        self.client
+            .transact_write_items()
+            .set_transact_items(Some(writes))
+            .send()
+            .await
+            .map_err(|_| StoreError::Conflict)?;
+        Ok(())
+    }
+    async fn grant_account(&self, grant: identity::AccountGrant) -> Result<()> {
+        let record = identity::AccountRecord::new(grant)?;
+        let pk = format!("ACCOUNT#{}", record.grant.id());
+        if let Some(existing) = self.get(&pk, "IDENTITY").await? {
+            let previous: identity::AccountRecord = json(&existing, "document")?;
+            if previous.grant == record.grant {
+                return Ok(());
+            }
+            return Err(StoreError::Conflict);
+        }
+        let mut item = key(&pk, "IDENTITY");
+        item.insert("document".into(), encoded(&record)?);
+        let mut writes = vec![self.put(item)?];
+        if let Some(binding) = &record.grant.bootstrap_device {
+            writes.push(self.guard(&Principal {
+                tenant_id: record.grant.tenant_id,
+                device_id: binding.device_id,
+                role: record.grant.role,
+            })?);
+        }
+        self.client
+            .transact_write_items()
+            .set_transact_items(Some(writes))
+            .send()
+            .await
+            .map_err(|_| StoreError::Conflict)?;
+        Ok(())
+    }
+    async fn account(&self, id: &str) -> Result<identity::AccountRecord> {
+        let item = self
+            .get(&format!("ACCOUNT#{id}"), "IDENTITY")
+            .await?
+            .ok_or(StoreError::Unauthorized)?;
+        let record: identity::AccountRecord = json(&item, "document")?;
+        record.active()?;
+        Ok(record)
+    }
+    async fn request_enrollment(
+        &self,
+        id: &str,
+        input: croaker_protocol::enrollment::EnrollmentInput,
+    ) -> Result<()> {
+        let mut record = self.account(id).await?;
+        let previous = encoded(&record)?;
+        record.request(input)?;
+        self.client
+            .transact_write_items()
+            .transact_items(self.account_update(id, previous, &record)?)
+            .send()
+            .await
+            .map_err(|_| StoreError::Conflict)?;
+        Ok(())
+    }
+    async fn decide_enrollment(
+        &self,
+        actor: &Principal,
+        account_id: &str,
+        id: MessageId,
+        fingerprint: &str,
+        approve: bool,
+    ) -> Result<()> {
+        self.active(actor).await?;
+        let mut record = self.account(account_id).await?;
+        let previous = encoded(&record)?;
+        let credential = record.decide(actor, id, fingerprint, approve)?;
+        let mut writes = vec![
+            self.guard(actor)?,
+            self.account_update(account_id, previous, &record)?,
+        ];
+        if let Some((principal, hash)) = credential {
+            let mut device = key(
+                &tenant_key(principal.tenant_id),
+                &device_key(principal.device_id),
+            );
+            device.insert("principal".into(), encoded(&principal)?);
+            device.insert("revoked".into(), A::Bool(false));
+            let mut auth = key(&format!("TOKEN#{hash}"), "AUTH");
+            auth.insert("principal".into(), encoded(&principal)?);
+            writes.extend([self.put(device)?, self.put(auth)?]);
+        }
+        self.client
+            .transact_write_items()
+            .set_transact_items(Some(writes))
+            .send()
+            .await
+            .map_err(|_| StoreError::Conflict)?;
+        Ok(())
+    }
     async fn authenticate(&self, token: &str) -> Result<Principal> {
         let auth = self
             .get(&format!("TOKEN#{}", token_hash(token)), "AUTH")
@@ -282,6 +434,127 @@ impl Store for DynamoStore {
         Ok(conversation)
     }
 
+    async fn conversation_info(
+        &self,
+        actor: &Principal,
+        id: ConversationId,
+    ) -> Result<Conversation> {
+        self.conversation(actor, id).await.map(|(group, _)| group)
+    }
+    async fn admit(
+        &self,
+        actor: &Principal,
+        id: ConversationId,
+        input: membership::GroupAdmission,
+    ) -> Result<membership::AcceptedAdmission> {
+        input.validate().map_err(StoreError::Invalid)?;
+        let pk = group_key(actor.tenant_id, id);
+        let receipt_key = format!("ADMISSION#{}", input.request_id);
+        let fingerprint = admission_hash(&input);
+        for _ in 0..8 {
+            let (group, current) = self.conversation(actor, id).await?;
+            if group.owner != actor.device_id {
+                return Err(StoreError::NotFound);
+            }
+            if let Some(receipt) = self.get(&pk, &receipt_key).await? {
+                self.active(actor).await?;
+                return if string(&receipt, "fingerprint")? == fingerprint {
+                    Ok(membership::AcceptedAdmission {
+                        commit_sequence: number(&receipt, "commit_sequence")?,
+                        welcome_sequence: number(&receipt, "welcome_sequence")?,
+                        duplicate: true,
+                    })
+                } else {
+                    Err(StoreError::Conflict)
+                };
+            }
+            let next = validate_admission(actor, &group, &input)?;
+            self.verify_devices(actor.tenant_id, &[input.added_device])
+                .await?;
+            let update = Update::builder()
+                .table_name(&self.table)
+                .set_key(Some(key(&pk, "META")))
+                .update_expression("SET #seq = :next, metadata = :metadata")
+                .condition_expression("#seq = :previous AND metadata = :old_metadata")
+                .expression_attribute_names("#seq", "sequence")
+                .expression_attribute_values(":next", A::N((current + 2).to_string()))
+                .expression_attribute_values(":previous", A::N(current.to_string()))
+                .expression_attribute_values(":metadata", encoded(&next)?)
+                .expression_attribute_values(":old_metadata", encoded(&group)?)
+                .build()
+                .map_err(|_| StoreError::Unavailable)?;
+            let added_guard = ConditionCheck::builder()
+                .table_name(&self.table)
+                .set_key(Some(key(
+                    &tenant_key(actor.tenant_id),
+                    &device_key(input.added_device),
+                )))
+                .condition_expression("revoked = :no")
+                .expression_attribute_values(":no", A::Bool(false))
+                .build()
+                .map_err(|_| StoreError::Unavailable)?;
+            let mut writes = vec![
+                self.guard(actor)?,
+                TransactWriteItem::builder()
+                    .condition_check(added_guard)
+                    .build(),
+                TransactWriteItem::builder().update(update).build(),
+            ];
+            let timestamp = now();
+            for (offset, event) in [(1, input.commit.clone()), (2, input.welcome.clone())] {
+                let stored = StoredEvent {
+                    sequence: current + offset,
+                    sender: actor.device_id,
+                    submitted_at: timestamp,
+                    expires_at: timestamp + RETENTION_SECONDS,
+                    event,
+                };
+                let mut item = key(&pk, &format!("EVENT#{:020}", stored.sequence));
+                item.insert("payload".into(), encoded(&stored)?);
+                item.insert("expires_at".into(), A::N(stored.expires_at.to_string()));
+                writes.push(self.put(item)?);
+                let mut receipt = key(
+                    &pk,
+                    &format!("RECEIPT#{}#{}", actor.device_id, stored.event.message_id),
+                );
+                receipt.insert("sequence".into(), A::N(stored.sequence.to_string()));
+                receipt.insert("fingerprint".into(), A::S(event_hash(&stored.event)));
+                writes.push(self.put(receipt)?);
+            }
+            let mut receipt = key(&pk, &receipt_key);
+            receipt.insert("fingerprint".into(), A::S(fingerprint.clone()));
+            receipt.insert("commit_sequence".into(), A::N((current + 1).to_string()));
+            receipt.insert("welcome_sequence".into(), A::N((current + 2).to_string()));
+            writes.push(self.put(receipt)?);
+            let mut floor = key(&pk, &format!("JOIN#{}", input.added_device));
+            floor.insert("after_sequence".into(), A::N((current + 1).to_string()));
+            writes.push(self.put(floor)?);
+            match self
+                .client
+                .transact_write_items()
+                .set_transact_items(Some(writes))
+                .send()
+                .await
+            {
+                Ok(_) => {
+                    return Ok(membership::AcceptedAdmission {
+                        commit_sequence: current + 1,
+                        welcome_sequence: current + 2,
+                        duplicate: false,
+                    });
+                }
+                Err(error)
+                    if error
+                        .as_service_error()
+                        .is_some_and(|error| error.is_transaction_canceled_exception()) =>
+                {
+                    continue;
+                }
+                Err(_) => return Err(StoreError::Unavailable),
+            }
+        }
+        Err(StoreError::Conflict)
+    }
     async fn append(
         &self,
         actor: &Principal,
@@ -370,6 +643,16 @@ impl Store for DynamoStore {
             return Err(StoreError::Invalid("page size must be 1–32"));
         }
         let (_, latest) = self.conversation(actor, id).await?;
+        let floor = self
+            .get(
+                &group_key(actor.tenant_id, id),
+                &format!("JOIN#{}", actor.device_id),
+            )
+            .await?
+            .map(|item| number(&item, "after_sequence"))
+            .transpose()?
+            .unwrap_or(0);
+        let cursor = cursor.max(floor);
         if cursor > latest {
             return Err(StoreError::Invalid("cursor is ahead of conversation"));
         }

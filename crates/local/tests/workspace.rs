@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use croaker_local::{Content, Workspace, router};
+use croaker_local::{Content, Workspace, demo_test_router as router};
 use croaker_protocol::*;
 use std::path::PathBuf;
 use tower::ServiceExt;
