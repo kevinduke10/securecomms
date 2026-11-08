@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-11-08
 - **Area:** Interaction / client UI
-- **Delivery:** Published to web and installed in the running iOS Simulator; responsive layout and approval checks pass
+- **Delivery:** Shared UI verified and installed in iOS Simulator; development cloud hosting subsequently removed
 - **Source:** User reported poorly laid-out Devices & security dialogs and overflowing codes during sign-in/device setup. Tabs, bounded scrolling, public-value copy controls and grouped forms are engineering choices.
 - **Related:** [0010](0010-account-login-and-replacement-device-enrollment.md), [0012](0012-functional-interface-copy.md), [0015](0015-independent-desktop-client.md), [0018](0018-ios-client-and-native-platform-bridge.md), [0020](0020-browser-client-and-web-hosting.md).
 
@@ -78,3 +78,6 @@ rebuild. Existing client keys, history and local workspaces are preserved.
   installation/profile/database files remained, and the Administrator messaging
   screen reopened successfully. No app data was reset. Physical-device layout and
   platform clipboard behavior have not been manually verified.
+
+The user subsequently requested cloud teardown; the web deployment is no longer
+live. See [teardown evidence](0019-aws-development-deployment-preparation.md#teardown-evidence).

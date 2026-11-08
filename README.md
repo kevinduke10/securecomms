@@ -10,8 +10,9 @@ names, CLI commands, configuration identifiers, and backup formats retain their
 The hosted browser client runs the Rust engine through WebAssembly with encrypted
 browser storage and independent device enrollment. The default localhost workflow
 remains a three-account Rust test harness. Cognito and approved-device enrollment
-are implemented; the development relay and web hosting are deployed with live
-endpoint/sign-in-page checks. Initial iOS Simulator enrollment was verified.
+are implemented. The development relay and web hosting were deployed and checked,
+then removed at the user’s request. No AWS installation is currently running.
+Initial iOS Simulator enrollment was verified; local/native data remains on disk.
 Full live browser onboarding/messaging, enterprise federation, signed distribution
 and production acceptance remain to be completed.
 An independent macOS desktop client now uses its own Rust device store and Keychain

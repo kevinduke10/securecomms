@@ -84,14 +84,19 @@ and [CloudWatch](https://aws.amazon.com/cloudwatch/pricing/).
 
 ## Current development rollout status
 
-The development relay is deployed in **us-east-2**. The initial us-east-1 attempt
+**Current status: the development AWS stack has been destroyed at the user’s request.**
+Terraform reports 33 resources removed and an empty state. Cloud accounts, relay
+data, buckets, web hosting and the budget are no longer present. Local client
+data and private state/deployment records were retained.
+
+The following is historical deployment evidence. The development relay was deployed in **us-east-2**. The initial us-east-1 attempt
 created supporting resources but core creation was denied by an organization
 policy. After the user selected Ohio, a new plan reused the global IAM role and
 budget and replaced the two verified-empty old-region log groups. The Ohio apply
 completed, and live health/login-configuration checks pass. Unauthenticated
 account access, conversation creation and sync return 401.
 
-The initial Cognito administrator exists. Private first-login details are in
+Before teardown, the initial Cognito administrator was created. Private first-login details are in
 `data/aws-deployment/initial-administrator.local.json` (owner-only, ignored).
 No invitation email was sent. Change the temporary password and enroll an
 authenticator app at first sign-in. The administrator tenant grant was provisioned
@@ -109,9 +114,29 @@ A successful login or plan does not override organization restrictions.
 
 ## Browser publication
 
-The same stack now includes a separate private frontend bucket, CloudFront HTTPS
+When deployed, the same stack includes a separate private frontend bucket, CloudFront HTTPS
 hosting, uncached same-origin relay routing, and the exact browser Cognito
 callback. `terraform output -raw web_url` is the webpage to open; `api_url`
 remains the native relay address. See [browser setup and publishing](web.md).
 The browser is an independent Rust/WASM device and needs its own approval, even
 when its account is already signed in on a native device.
+
+## Intentional teardown
+
+Use the existing state and verify the AWS account and resource IDs before
+removing an installation. Keep a private state backup. Stop new relay requests,
+empty only that installation's frontend/media buckets (including versions and
+multipart uploads), and disable the table/user-pool deletion protections only for
+the authorized teardown. Preserve unrelated user-pool settings when changing its
+protection flag. Keep the protected defaults in the tracked Terraform unchanged.
+
+For a teardown that should not create a deleted-table recovery snapshot, disable
+DynamoDB point-in-time recovery before deleting the table. AWS otherwise retains
+an automatic deleted-table backup for up to 35 days; see the
+[AWS recovery documentation](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/PointInTimeRecovery_Howitworks.html).
+Review a fresh `terraform plan -destroy` and apply that saved plan. CloudFront
+removal can require several minutes. Do not declare completion until the managed
+state is empty and the specific application resources are absent in AWS.
+
+Local client stores, Keychain entries, browser keys/history and private deployment
+inputs are separate from cloud resources. Do not erase those during cloud teardown.

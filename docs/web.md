@@ -91,7 +91,8 @@ physical devices, browser compatibility and S3 acceptance need separate evidence
 
 ## Current deployment evidence
 
-The development frontend is published. Three browser contract tests and all 19
+The development frontend was published and validated, then the AWS stack was
+removed at the user’s request. The old website and relay are no longer live. Three browser contract tests and all 19
 existing UI regression tests pass. A real browser initialized the hosted worker
 and WASM with no errors, verified the uncached same-origin relay configuration
 and rejected unauthenticated access, and opened the real Cognito sign-in form.
@@ -100,8 +101,9 @@ MFA/browser approval or live AWS messaging/S3 acceptance test.
 
 ## Development test accounts
 
-Three operator-created Cognito test accounts are available in the development
-tenant: two members and one restricted guest. Their sign-in names and temporary
+The development tenant previously contained three operator-created Cognito test
+accounts: two members and one restricted guest. These were deleted with the
+user pool during teardown; their old credentials no longer work. Their sign-in names and temporary
 passwords are kept in the ignored owner-only file
 `data/aws-deployment/mock-accounts.local.json`. No invitation emails were sent;
 the reserved example addresses do not receive mail. First sign-in requires a

@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-11-08
 - **Area:** Deployment / operator authentication / operations
-- **Delivery:** Development relay deployed in us-east-2; live endpoint smoke checks pass; native login/enrollment acceptance pending
+- **Delivery:** Development deployment validated, then all 33 managed resources destroyed at the user’s request; infrastructure source retained
 - **Source:** User requested AWS deployment and asked about costs without use. The user supplied an administrator/budget contact; that private deployment input remains outside tracked documentation.
 - **Related:** [0002](0002-rust-core-and-serverless-aws.md), [0010](0010-account-login-and-replacement-device-enrollment.md), [0017](0017-client-encrypted-object-attachments.md).
 
@@ -91,3 +91,20 @@ are not a spending cap.
   removed. No client private keys or MLS state were transferred to the relay.
   This validates this simulator enrollment, not physical-device or messaging/media
   acceptance.
+
+## Teardown evidence
+
+The user requested teardown of the stack on 2026-11-08. Operator identity and the
+exact managed resource IDs were checked, and a private state backup was retained.
+New Lambda requests were blocked; DynamoDB recovery was disabled before deletion
+to avoid retaining a deleted-table snapshot. Table/user-pool deletion protections
+were disabled for this authorized teardown without weakening tracked defaults.
+Both application buckets were emptied, including versions and multipart uploads.
+
+A reviewed destroy plan removed all 33 managed resources. Terraform state has no
+remaining resources or outputs. Independent AWS checks confirmed the database,
+user pool, Lambda, IAM role, budget, API, frontend/media buckets and CloudFront
+resources were absent; no DynamoDB backups or old/new-region Cirra logs remained.
+The website and relay are offline. No local/native client stores, browser keys,
+Keychain entries or local deployment inputs were erased. Source code remains
+available for a future installation; old Cognito credentials are no longer usable.

@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-11-08
 - **Area:** Client architecture / persistence / security / deployment
-- **Delivery:** Published development browser client; WASM messaging/media contracts and live hosted sign-in-page checks pass
+- **Delivery:** Browser client implemented and validated; development cloud hosting subsequently removed at the user’s request
 - **Source:** User explicitly requested deploying the web UI and selected full browser messaging. WASM, Web Crypto, IndexedDB, Web Locks and CloudFront are engineering choices.
 - **Related:** [0004](0004-transactional-client-state-and-recovery.md), [0005](0005-local-ui-test-harness.md), [0010](0010-account-login-and-replacement-device-enrollment.md), [0015](0015-independent-desktop-client.md), [0019](0019-aws-development-deployment-preparation.md).
 
@@ -107,3 +107,7 @@ security audit.
   web callback. Actual user MFA/browser approval and authenticated AWS messaging/
   S3 file acceptance remain pending; local fixture coverage is not a live-provider
   or security-audit claim.
+
+The development stack was subsequently destroyed at the user’s request; see
+[teardown evidence](0019-aws-development-deployment-preparation.md#teardown-evidence).
+The implementation and historical validation above do not imply live hosting.
